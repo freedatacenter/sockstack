@@ -27,6 +27,11 @@ address — that is the question this tool answers. Note the third entry: it is
 printed four frames deep because another path shares its first three, and
 collapsing the two would have hidden a real one.
 
+The examples throughout this repository are genuine tool output. The addresses,
+hostnames, package and class names in them have been replaced with synthetic
+ones — the shape is real, the indicators are not, and nothing here points at
+live infrastructure.
+
 That mapping is the point of the project. Everything else here is the plumbing
 needed to get a decrypted capture out the other end.
 
