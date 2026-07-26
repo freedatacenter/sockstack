@@ -20,6 +20,3 @@ decrypted_bodies_*.txt
 frida-server*
 agent/node_modules/
 
-# working material, never part of a release
-замечания/
-code_review*.md
