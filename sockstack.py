@@ -51,7 +51,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
-__version__ = '2.3.0'
+__version__ = '2.3.1'
 
 DEV_PCAP = '/data/local/tmp/sockstack_capture.pcap'
 FRIDA_SERVER = '/data/local/tmp/frida-server'
@@ -525,35 +525,79 @@ def stop_capture(serial, out_dir, keep_device_artifacts=False):
 # up in the device-wide capture with nothing tying it to the target, which is
 # indistinguishable from another app's traffic.
 #
-# The kernel knows better. Every socket in /proc/net/tcp carries the UID that
-# owns it, and Android gives each package its own UID. Polling that table is a
-# second, independent view of where the target went, and it does not care how the
+# The kernel knows better. Every socket in /proc/net/{tcp,udp} carries the UID
+# that owns it, and Android normally gives each package its own. Polling those
+# tables is a second view of where the target went, and it does not care how the
 # syscall was issued. It cannot attribute anything to a call site — but it can
-# say "this was the target's, and the tracer missed it", which is the difference
-# between a blind spot you know about and one you do not.
+# say "this was the target's, and the tracer has no record of it", which is the
+# difference between a blind spot you know about and one you do not.
+#
+# Every claim it makes is weaker than it looks, so the artifact records how the
+# check went rather than only what it found: a silent empty result and a result
+# that is genuinely empty must not read the same.
+
+# Both tables are polled: the tracer records UDP as well as TCP, and a safety net
+# narrower than the thing it checks is worse than none — Go resolves DNS over a
+# connected UDP socket, which is exactly the traffic this exists to catch.
+PROC_NET_SOURCES = ('tcp', 'tcp6', 'udp', 'udp6')
+# /proc/net/tcp state column. Only the distinction that changes what may be
+# claimed is kept: a socket stuck in SYN_SENT is a connection *attempted*, which
+# a dead C2 being retried produces, and calling that "contacted" overstates it.
+TCP_ESTABLISHED = '01'
+TCP_SYN_SENT = '02'
+
 
 def resolve_uid(serial, package):
-    """The Linux UID Android assigned to `package`, or None."""
-    listing = (adb(serial, 'shell', f'pm list packages -U {shlex.quote(package)}').stdout
-               or '')
+    """(uid, other packages sharing it) for `package`; (None, []) if unknown.
+
+    The second element is not decoration. `android:sharedUserId` still exists,
+    and a UID shared with system_server would drag every socket on the device
+    into the target's column — so the caller has to be able to say so.
+    """
+    listing = (adb(serial, 'shell', 'pm list packages -U').stdout or '')
+    by_uid, uid = {}, None
     for line in listing.splitlines():
         parts = line.strip().split()
-        if parts and parts[0] == f'package:{package}':
-            for field in parts[1:]:
-                if field.startswith('uid:') and field[4:].isdigit():
-                    return int(field[4:])
+        if len(parts) < 2 or not parts[0].startswith('package:'):
+            continue
+        name = parts[0][len('package:'):]
+        for field in parts[1:]:
+            if field.startswith('uid:') and field[4:].isdigit():
+                by_uid.setdefault(int(field[4:]), []).append(name)
+                if name == package:
+                    uid = int(field[4:])
+    if uid is not None:
+        return uid, sorted(n for n in by_uid.get(uid, []) if n != package)
     # Older builds have no `-U`; the data directory is owned by the same UID.
     owner = (priv(serial, f'stat -c %u /data/data/{shlex.quote(package)}').stdout or '').strip()
-    return int(owner) if owner.isdigit() else None
+    return (int(owner), []) if owner.isdigit() else (None, [])
+
+
+def uid_from_pid(serial, pid):
+    """The UID a running process belongs to, or None.
+
+    Needed because `--package` is not always a package name: attaching to a
+    foreground app means naming it the way Frida does, by its label, and that
+    resolves against nothing in the package manager. Attach is the documented
+    mode for samples with no launcher activity — most RATs — so a cross-check
+    that quietly switches itself off there would be off exactly when wanted.
+    """
+    status = (priv(serial, f'cat /proc/{int(pid)}/status').stdout or '')
+    for line in status.splitlines():
+        if line.startswith('Uid:'):
+            fields = line.split()
+            if len(fields) > 1 and fields[1].isdigit():
+                return int(fields[1])
+    return None
 
 
 def decode_proc_addr(text):
     """`0100007F:1F90` -> ('127.0.0.1', 8080).
 
-    /proc/net/tcp writes each 32-bit word of the address in host byte order,
-    which on every Android ABI means little-endian, and the port in network
-    order. IPv4-mapped IPv6 is rendered as plain IPv4 so that both tables agree
-    on how one address is spelled.
+    /proc/net writes each 32-bit word of the address in host byte order, which
+    on every Android ABI means little-endian, and the port in network order.
+    IPv4-mapped IPv6 is rendered as plain IPv4 so that both views agree on how
+    one address is spelled; disagreeing would invent misses out of nothing.
     """
     ip_hex, _, port_hex = text.partition(':')
     port = int(port_hex, 16)
@@ -568,9 +612,17 @@ def decode_proc_addr(text):
 
 
 def parse_proc_net(text, uid):
-    """Remote (ip, port) pairs owned by `uid`, from /proc/net/tcp or tcp6."""
-    peers = set()
+    """{(ip, port, proto): established} for sockets owned by `uid`.
+
+    `text` is the concatenation produced by `PROC_NET_READ`, whose `== name`
+    markers say which table each block came from. Rows with no remote port are
+    listeners and unconnected sockets: not somewhere the target went.
+    """
+    found, proto = {}, 'tcp'
     for line in (text or '').splitlines():
+        if line.startswith('=='):
+            proto = line[2:].strip() or proto
+            continue
         fields = line.split()
         if len(fields) < 8 or fields[0] == 'sl':
             continue
@@ -578,25 +630,124 @@ def parse_proc_net(text, uid):
             if int(fields[7]) != uid:
                 continue
             ip, port = decode_proc_addr(fields[2])
+            state = fields[3]
         except (ValueError, IndexError):
             continue        # a truncated or unexpected row is not worth a crash
-        if port:            # port 0 is a listening or unconnected socket
-            peers.add((ip, port))
-    return peers
+        if not port:
+            continue
+        # UDP has no handshake, so anything with a peer counts as used; for TCP
+        # only ESTABLISHED means the far end actually answered.
+        established = proto.startswith('udp') or state == TCP_ESTABLISHED
+        key = (ip, port, proto)
+        found[key] = found.get(key, False) or established
+    return found
 
 
-def poll_uid_sockets(serial, uid, stop_event, found, interval=2):
-    """Accumulate the target's connections until told to stop.
+PROC_NET_READ = ' ; '.join(
+    f'echo "== {name}" ; cat /proc/net/{name} 2>/dev/null' for name in PROC_NET_SOURCES)
 
-    Connections are short-lived, so this samples rather than observes: a socket
-    opened and closed between two polls is missed. It is a cross-check on the
-    tracer, not a replacement for it, and the report says so.
+
+class KernelCrossCheck:
+    """Polls the kernel's socket tables for the target's own connections.
+
+    Sampling, not observation: a socket opened and closed between two polls is
+    missed by this and by nothing else, so a clean result is weaker evidence
+    than a dirty one. The report is expected to say so.
     """
-    while True:
-        text = (priv(serial, 'cat /proc/net/tcp /proc/net/tcp6').stdout or '')
-        found.update(parse_proc_net(text, uid))
-        if stop_event.wait(interval):
+
+    def __init__(self, serial, package, pid_hint=None, interval=2):
+        self.serial = serial
+        self.package = package
+        self.pid_hint = pid_hint or (lambda: None)
+        self.interval = interval
+        self.uid = None
+        self.shared_with = []
+        self.reads_ok = 0
+        self.reads_failed = 0
+        self.status = 'not-run'
+        self._peers = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+
+    # -- lifecycle ---------------------------------------------------------
+    def start(self):
+        self.uid, self.shared_with = resolve_uid(self.serial, self.package)
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        if self.uid is None:
+            print('[i] kernel cross-check: no UID for '
+                  f'{self.package!r} yet — retrying from the traced process')
+        else:
+            self._announce()
+        return self
+
+    def stop(self, timeout=5):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout)
+        return self.artifact()
+
+    def _announce(self):
+        note = ''
+        if self.shared_with:
+            note = (f' — shared with {len(self.shared_with)} other package(s), '
+                    f'so their traffic counts as the target\'s')
+        print(f'[+] kernel cross-check active on uid {self.uid}{note}')
+
+    # -- polling -----------------------------------------------------------
+    def _loop(self):
+        while True:
+            if self.uid is None:
+                pid = self.pid_hint()
+                if pid:
+                    self.uid = uid_from_pid(self.serial, pid)
+                    if self.uid is not None:
+                        self._announce()
+            if self.uid is not None:
+                self._poll_once()
+            if self._stop.wait(self.interval):
+                return
+
+    def _poll_once(self):
+        result = priv(self.serial, PROC_NET_READ)
+        text = result.stdout or ''
+        if result.returncode != 0 or '==' not in text:
+            self.reads_failed += 1
             return
+        self.reads_ok += 1
+        seen = parse_proc_net(text, self.uid)
+        with self._lock:
+            for key, established in seen.items():
+                self._peers[key] = self._peers.get(key, False) or established
+
+    # -- result ------------------------------------------------------------
+    def artifact(self):
+        """What the check found *and* whether it was in a position to find it.
+
+        Always written on a device run. An absent line and an empty one used to
+        look alike, and "the check found nothing" is a very different statement
+        from "the check never ran".
+        """
+        with self._lock:
+            peers = dict(self._peers)
+        if self.uid is None:
+            self.status = 'no-uid'
+        elif self.reads_ok == 0:
+            self.status = 'unreadable'
+        else:
+            self.status = 'ok'
+        return {
+            'uid': self.uid,
+            'status': self.status,
+            'shared_with': self.shared_with,
+            'sources': list(PROC_NET_SOURCES),
+            'polls_succeeded': self.reads_ok,
+            'polls_failed': self.reads_failed,
+            'peers': [{'ip': ip, 'port': port, 'proto': proto,
+                       'established': established}
+                      for (ip, port, proto), established in sorted(peers.items())],
+        }
 
 
 # --------------------------------------------------------------------------- analysis (pure)
@@ -656,6 +807,25 @@ def tracer_ips(records, counts=None):
         parts = key.split('|')
         if len(parts) >= 3 and parts[1]:
             found.add(parts[1])
+    return found
+
+
+def tracer_peers(records, counts=None):
+    """Every (ip, port) the traced process itself contacted.
+
+    Coarser matching on the address alone hides a second channel to a host the
+    tracer already knows — a payload reusing the app's own CDN address on
+    another port is precisely the case the cross-check exists to surface.
+    """
+    found = set()
+    for rec in records or []:
+        ip, port = rec.get('peer_ip'), rec.get('peer_port')
+        if ip and port:
+            found.add((str(ip), int(port)))
+    for key in (counts or {}):
+        parts = key.split('|')
+        if len(parts) >= 3 and parts[1] and str(parts[2]).isdigit():
+            found.add((parts[1], int(parts[2])))
     return found
 
 
@@ -971,10 +1141,14 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
     # destination the tracer could not observe is still recognised as the
     # target's rather than written off as another app's.
     uid_blob = _load_json(os.path.join(out_dir, 'uid_sockets.json'), {})
-    uid_peers = {(entry.get('ip'), entry.get('port'))
-                 for entry in uid_blob.get('peers', []) if entry.get('ip')}
-    missed_by_tracer = sorted({peer for peer in uid_peers if peer[0] not in target_ips})
-    target_ips |= {ip for ip, _ in uid_peers}
+    seen_pairs = tracer_peers(records, counts_blob.get('counts'))
+    uid_entries = [entry for entry in uid_blob.get('peers', []) if entry.get('ip')]
+    missed_by_tracer = sorted(
+        (entry['ip'], entry.get('port'), entry.get('proto', 'tcp'),
+         entry.get('established', True))
+        for entry in uid_entries
+        if (entry['ip'], entry.get('port')) not in seen_pairs)
+    target_ips |= {entry['ip'] for entry in uid_entries}
 
     # Cleartext lives in the raw capture and needs no keys at all. Reading it
     # from there is what keeps a keyless run useful instead of empty.
@@ -1051,7 +1225,9 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
     def mark(is_target):
         """Distinguish the target's own traffic from everything else the device
         was doing. Without this the analyst has to guess, and guesses wrong."""
-        return ' — **target**' if is_target else ' — other process'
+        # "other process" was a positive claim the tool cannot support: nobody
+        # saw this address, which is not the same as somebody else owning it.
+        return ' — **target**' if is_target else ' — not attributed'
 
     # The header must name what was actually analysed. Under --postprocess-only
     # the caller can pass any label, so the recorded target wins over it.
@@ -1117,26 +1293,52 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
         lines.append(f'- **Event cap ({counts_blob.get("max_events")}) reached** — '
                      f'counts remain complete, but call sites first seen after the '
                      f'cap have no stored record.')
-    if uid_blob:
-        noun = 'destination' if len(uid_peers) == 1 else 'destinations'
+    # Status, not just findings: "found nothing" and "never looked" are
+    # different claims, and only one of them is reassuring.
+    status = uid_blob.get('status') if uid_blob else None
+    if status == 'ok':
+        noun = 'destination' if len(uid_entries) == 1 else 'destinations'
         lines.append(f'- Kernel cross-check (uid {uid_blob.get("uid")}): '
-                     f'{len(uid_peers)} {noun} owned by the target, '
-                     f'{len(missed_by_tracer)} unseen by the tracer')
+                     f'{len(uid_entries)} {noun} owned by the target, '
+                     f'{len(missed_by_tracer)} with no tracer record')
+    elif status == 'no-uid':
+        lines.append('- **Kernel cross-check did not run**: the target\'s UID could '
+                     'not be resolved, so traffic bypassing libc would go unnoticed '
+                     'here rather than be reported.')
+    elif status == 'unreadable':
+        lines.append(f'- **Kernel cross-check failed**: /proc/net was unreadable on '
+                     f'{uid_blob.get("polls_failed", 0)} attempt(s). Its absence '
+                     f'below is not evidence of anything.')
+    elif not uid_blob:
+        lines.append('- Kernel cross-check: no record for this run (the run predates '
+                     'the check, ended before it was written, or ran with --host).')
+    if uid_blob.get('shared_with'):
+        lines.append(f'- **UID {uid_blob.get("uid")} is shared with '
+                     f'{", ".join(uid_blob["shared_with"])}** — the cross-check '
+                     f'cannot tell those packages\' sockets from the target\'s, so '
+                     f'treat everything it contributes as belonging to the group.')
     for issue in issues:
         lines.append(f'- Analysis problem: {issue}')
     if not records and not os.path.exists(pcap):
         lines.append('- No tracer records and no capture: this run collected nothing.')
 
     if missed_by_tracer:
-        lines += ['', '## Traffic the tracer never saw', '',
-                  "The kernel recorded these destinations against the target's own "
-                  'UID, and no tracer record mentions them. The tracer hooks libc, '
-                  'so a payload issuing raw syscalls — a Go runtime, a statically '
-                  'linked binary — reaches the network without passing through it. '
-                  'These are the target\'s connections; they simply cannot be '
-                  'attributed to a call site, and without this check they would '
-                  "have been reported below as another process's.", '']
-        lines += [f'- `{format_peer(ip, port)}`' for ip, port in missed_by_tracer]
+        lines += ['', '## Traffic the tracer has no record of', '',
+                  "The kernel attributed these sockets to the target's UID and the "
+                  'tracer never recorded them. None of them can be tied to a call '
+                  'site. Why the tracer missed one is not something this check can '
+                  'decide, and the likely reasons differ in what they mean:', '',
+                  '- the connection never went through libc — a Go runtime or a '
+                  'statically linked payload issuing raw syscalls, which is what '
+                  'this check exists to catch;',
+                  '- it was already open and idle when instrumentation attached, so '
+                  'no hooked call ever ran (routine when a sample holds a C2 socket '
+                  'open across an `--attach`);',
+                  '- the tracer\'s own record of it was lost — a run cut short '
+                  'before `socket_trace_counts.json` was written.', '']
+        for ip, port, proto, established in missed_by_tracer:
+            state = '' if established else '  — attempted, never established'
+            lines.append(f'- `{format_peer(ip, port)}` ({proto}){state}')
 
     lines += ['', '## Peers (socket tracer — pre-DNS, pre-TLS)', '']
     lines += [f'- `{k}` — {v}' for k, v in peers.most_common()] or ['- (none)']
@@ -1165,11 +1367,10 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
               '_Everything above comes from the tracer and describes the target '
               'process only. Everything below is read from the packet capture, which '
               'is device-wide. An entry is marked **target** when its address is one '
-              'the tracer saw the target contact. Unmarked means only that the tracer '
-              'did not see it — usually another process on the device, but the tracer '
-              'observes just what passes through libc, so a target issuing raw '
-              'syscalls (a Go runtime, a statically linked payload) lands here too. '
-              'Read unmarked as "not attributed", never as "proven unrelated"._', '']
+              'the target was seen to contact — by the tracer, or by the kernel '
+              'cross-check, which knows the socket was the target\'s but not which '
+              'code opened it. Unmarked means neither saw it: usually another '
+              'process, never proof of one. Read unmarked as "not attributed"._', '']
     lines += ['', '## DNS queries', '']
     lines += [f'- `{n}` — {c}{mark(n in dns_target)}'
               for n, c in dns.most_common()] or ['- (none)']
@@ -1440,19 +1641,14 @@ def main():
 
     # Second view of the target's traffic, taken from the kernel rather than from
     # libc, so that a payload bypassing libc cannot pass for another app.
-    uid_peers, uid_stop, uid_poller, target_uid = set(), threading.Event(), None, None
+    cross_check = None
     if not args.host:
-        target_uid = resolve_uid(args.device, args.package)
-        if target_uid is None:
-            print('[!] could not resolve the target\'s UID — the kernel cross-check '
-                  'is off for this run, so traffic that bypasses libc would go '
-                  'unnoticed rather than be flagged')
-        else:
-            uid_poller = threading.Thread(
-                target=poll_uid_sockets,
-                args=(args.device, target_uid, uid_stop, uid_peers), daemon=True)
-            uid_poller.start()
-            print(f'[+] kernel cross-check active on uid {target_uid}')
+        cross_check = KernelCrossCheck(
+            args.device, args.package,
+            # Attaching by label leaves nothing for the package manager to match,
+            # so fall back to the UID of whatever process the tracer is in.
+            pid_hint=lambda: next((r.get('pid') for r in plugin.records
+                                   if r.get('pid')), None)).start()
 
     print(f'[+] collecting for {args.duration}s (Ctrl-C to stop early) — '
           f'drive the app so it actually reaches the network')
@@ -1477,18 +1673,10 @@ def main():
     # Everything is finalized BEFORE the session is stopped. Stopping can hang on
     # a wedged target, and friTap's own detach path may terminate the process
     # outright — either way the evidence must already be on disk.
-    uid_stop.set()
-    if uid_poller:
-        uid_poller.join(5)
     plugin.close_sink()
     with open(os.path.join(args.output, 'socket_trace.json'), 'w') as out:
         json.dump(plugin.records, out, indent=2)
     print(f'[+] socket_trace.json: {len(plugin.records)} records')
-    if target_uid is not None:
-        with open(os.path.join(args.output, 'uid_sockets.json'), 'w') as out:
-            json.dump({'uid': target_uid,
-                       'peers': [{'ip': ip, 'port': port}
-                                 for ip, port in sorted(uid_peers)]}, out, indent=2)
     if plugin.counts:
         with open(os.path.join(args.output, 'socket_trace_counts.json'), 'w') as out:
             json.dump(plugin.counts, out, indent=2)
@@ -1498,6 +1686,17 @@ def main():
                        'warnings': plugin.warnings,
                        'target_ended_early': target_gone}, out, indent=2)
     cleanup_device()
+
+    # After the capture is off the device, never before it. This is an optional
+    # cross-check reading state a background thread may still be touching; the
+    # evidence must not be behind it in the queue, and must not depend on it
+    # succeeding.
+    if cross_check is not None:
+        try:
+            with open(os.path.join(args.output, 'uid_sockets.json'), 'w') as out:
+                json.dump(cross_check.stop(), out, indent=2)
+        except Exception as exc:                        # noqa: BLE001
+            print(f'[!] kernel cross-check result not written: {exc}')
 
     stopper = threading.Thread(target=_safe_stop, args=(session,), daemon=True)
     stopper.start()

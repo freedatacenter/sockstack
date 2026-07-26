@@ -1,6 +1,6 @@
 {
   "name": "sockstack-agent",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "private": true,
   "description": "Frida agent for sockstack: socket operations with Java call-stack attribution",
   "type": "module",

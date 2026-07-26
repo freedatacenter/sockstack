@@ -1,5 +1,96 @@
 # Changelog
 
+## 2.3.1
+
+Review of 2.3.0 found that the safety net added there could itself go quietly
+wrong, in the ways it was built to prevent. Nine fixes, all in that feature.
+
+### Fixed — the cross-check could cost the whole capture
+
+`uid_sockets.json` was written from a set a live poller thread might still be
+mutating, and it was written *before* `cleanup_device()`, which is what pulls
+`traffic.pcap` off the device. `join(5)` is not a guarantee: the poller blocks in
+an `adb` call with a 60-second timeout, and a wedged device — which this codebase
+assumes as normal everywhere else — leaves it running well past the join. The
+iteration would then raise, and with no `try` anywhere downstream that would skip
+the counts, the metadata, **the capture pull**, the session stop, the summary and
+the manifest. An optional cross-check had been placed ahead of the evidence.
+
+The poller now snapshots under a lock, and its artifact is written after the
+capture is safely off the device, inside a `try`.
+
+### Fixed — the report's own legend described the previous release
+
+2.3.0 made `target` mean "seen by the tracer **or** the kernel", updated the
+README and the walkthrough, and left the paragraph the report itself prints
+saying the tracer alone. That paragraph had been rewritten one commit earlier
+for exactly this reason. It now matches the code, and the `other process` mark —
+the last positive claim left about traffic nobody observed — reads `not
+attributed`.
+
+### Fixed — UDP was not polled, though the tracer records it
+
+The cross-check read `/proc/net/tcp` and `tcp6` only, making the safety net
+narrower than the thing it guards. It also missed the motivating case: Go
+resolves DNS over a connected UDP socket, so a Go payload's own lookups were
+invisible to both views while the status line reported agreement. All four
+tables are read now, and each destination carries the protocol it was seen on.
+
+### Fixed — "agreement" was reported as if it meant attribution
+
+The comparison uses every tracer record regardless of whether a stack was
+captured, so a run with a broken Java bridge — no attribution at all — still
+reported full agreement, under wording that told the reader attribution covered
+the traffic. The line now says `N with no tracer record`, which is a claim about
+observed sockets, and the walkthrough says plainly that it is not a claim about
+call stacks.
+
+### Fixed — a check that never ran looked exactly like one that found nothing
+
+Four situations produced an identical report: `--host`, an unresolved UID, a run
+cut short, and a directory from before the feature existed. The artifact is now
+always written on a device run and carries its own status, so the report can
+distinguish *did not run*, *could not read `/proc/net`*, and *ran and agreed*.
+Poll successes and failures are counted.
+
+### Fixed — the cross-check switched itself off under `--attach`
+
+`resolve_uid` looked the package up in the package manager. But attaching names
+a process the way Frida does — by label, `Chrome` rather than
+`com.android.chrome` — which matches no package, so the check silently did
+nothing in the mode documented for samples with no launcher activity: most RATs.
+It now falls back to the UID of the process the tracer is actually in.
+
+### Fixed — shared UIDs were assumed not to exist
+
+`android:sharedUserId` still does, and `android.uid.system` is UID 1000 — on the
+test emulator five packages share one application-range UID. The check cannot
+tell those packages' sockets apart, so it now reports which packages share the
+UID instead of quietly attributing their traffic to the target.
+
+### Fixed — the section named one cause and there are several
+
+"Traffic the tracer has no record of" asserted raw syscalls. A socket already
+open and idle when instrumentation attached leaves identical evidence, as does a
+run that lost its counts artifact, and a row still in `SYN_SENT` is a connection
+*attempted* — what a dead C2 being retried looks like. The section now lists the
+candidates instead of choosing one, and unestablished connections are marked.
+
+### Fixed — the comparison dropped the port it had collected
+
+Matching on address alone hid a second channel to a host the tracer already knew:
+a payload reusing the app's own CDN address on another port. Both sides carry
+ports; both are now compared.
+
+### Fixed — a test fixture claimed a provenance it did not have
+
+The `/proc/net/tcp6` fixture was labelled as captured from a device, but its
+remote address had been hand-edited and decoded to a different host than the
+device produced. In a suite where comments cite real runs, one that does not
+devalues the rest. The verbatim row is restored and the added rows are marked as
+added.
+
+
 ## 2.3.0
 
 ### Added — a kernel cross-check, so a blind spot cannot pass for someone else's traffic

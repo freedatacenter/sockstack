@@ -499,19 +499,33 @@ class DeviceArch(unittest.TestCase):
         self.assertEqual(self.arch_for(''), ('unknown', '<arch>'))
 
 
+# Row 1 is verbatim from an Android 14 x86_64 emulator. Row 0 (a loopback
+# listener) and row 2 (the same peer one address up, left in SYN_SENT) were
+# added by hand to cover cases the captured sample did not contain.
 PROC_NET_TCP = """\
   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 0100007F:69A2 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 159278 1 0000000000000000 100 0 0 10 0
-   1: 1002000A:EA5A 779AFB8E:01BB 08 00000000:00000000 00:00000000 00000000 10132        0 150158 1 0000000000000000 70 4 22 10 -1
+   1: 1002000A:EA5A 779AFB8E:01BB 01 00000000:00000000 00:00000000 00000000 10132        0 150158 1 0000000000000000 70 4 22 10 -1
+   2: 1002000A:EA5B 779AFB8F:01BB 02 00000000:00000000 00:00000000 00000000 10132        0 150159 1 0000000000000000 70 4 22 10 -1
 """
 
-# Real rows from /proc/net/tcp6 on an Android 14 emulator: an unbound listener,
-# and a connection whose address is IPv4-mapped.
+# Verbatim rows from /proc/net/tcp6 on an Android 14 x86_64 emulator: an unbound
+# listener, and an established connection whose address is IPv4-mapped.
 PROC_NET_TCP6 = """\
   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000000000000000000000000000:B281 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 167169 1 0000000000000000 100 0 0 10 0
-   1: 0000000000000000FFFF00001002000A:A97C 0000000000000000FFFF0000BC944BAD:01BB 01 00000000:00000000 00:00000000 00000000 10131        0 122249 1 0000000000000000 100 0 0 10 0
+   3: 0000000000000000FFFF00001002000A:CDC2 0000000000000000FFFF0000BC94FDAC:01BB 01 00000000:00000000 00:00000000 00000000 10131        0 132385 1 0000000000000000 95 4 31 10 -1
 """
+
+PROC_NET_UDP = """\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
+  42: 1002000A:E5C1 0800000A:0035 07 00000000:00000000 00:00000000 00000000 10132        0 151002 2 0000000000000000 0
+"""
+
+
+def tables(**blocks):
+    """The concatenation the device-side reader produces."""
+    return ''.join(f'== {name}\n{body}' for name, body in blocks.items())
 
 
 class ProcNetParsing(unittest.TestCase):
@@ -524,35 +538,55 @@ class ProcNetParsing(unittest.TestCase):
                          ('142.251.154.119', 443))
 
     def test_ipv4_mapped_ipv6_is_reported_as_ipv4(self):
-        # Both tables must spell one address the same way, or the same host
-        # looks like two and the cross-check reports a phantom miss.
+        # Both views must spell one address the same way, or the same host looks
+        # like two and the cross-check reports a miss that never happened.
         self.assertEqual(
-            sockstack.decode_proc_addr('0000000000000000FFFF0000BC944BAD:01BB'),
-            ('173.75.148.188', 443))
+            sockstack.decode_proc_addr('0000000000000000FFFF0000BC94FDAC:01BB'),
+            ('172.253.148.188', 443))
 
     def test_a_malformed_address_raises_rather_than_guesses(self):
         with self.assertRaises(ValueError):
             sockstack.decode_proc_addr('nonsense')
 
     def test_only_rows_owned_by_the_target_uid_are_kept(self):
-        self.assertEqual(sockstack.parse_proc_net(PROC_NET_TCP, 10132),
-                         {('142.251.154.119', 443)})
-        self.assertEqual(sockstack.parse_proc_net(PROC_NET_TCP, 10133), set())
+        found = sockstack.parse_proc_net(tables(tcp=PROC_NET_TCP), 10132)
+        self.assertEqual(set(found), {('142.251.154.119', 443, 'tcp'),
+                                      ('143.251.154.119', 443, 'tcp')})
+        self.assertEqual(sockstack.parse_proc_net(tables(tcp=PROC_NET_TCP), 10133), {})
+
+    def test_a_connection_still_in_syn_sent_is_marked_unestablished(self):
+        """A C2 that is down and being retried produces SYN_SENT rows. Reporting
+        those as contacted destinations overstates what happened."""
+        found = sockstack.parse_proc_net(tables(tcp=PROC_NET_TCP), 10132)
+        self.assertTrue(found[('142.251.154.119', 443, 'tcp')])
+        self.assertFalse(found[('143.251.154.119', 443, 'tcp')])
 
     def test_listening_sockets_are_not_destinations(self):
-        # Row 0 is owned by uid 0 with remote port 0; a listener is not somewhere
-        # the target went.
-        self.assertEqual(sockstack.parse_proc_net(PROC_NET_TCP, 0), set())
+        self.assertEqual(sockstack.parse_proc_net(tables(tcp=PROC_NET_TCP), 0), {})
 
     def test_ipv6_table_is_parsed_with_the_same_uid_rule(self):
-        self.assertEqual(sockstack.parse_proc_net(PROC_NET_TCP6, 10131),
-                         {('173.75.148.188', 443)})
+        found = sockstack.parse_proc_net(tables(tcp6=PROC_NET_TCP6), 10131)
+        self.assertEqual(set(found), {('172.253.148.188', 443, 'tcp6')})
+
+    def test_udp_is_read_too(self):
+        """The tracer records UDP, so a cross-check that skipped it would be
+        narrower than the thing it checks — and Go resolves DNS over a connected
+        UDP socket, which is exactly the traffic this exists to catch."""
+        found = sockstack.parse_proc_net(tables(udp=PROC_NET_UDP), 10132)
+        self.assertEqual(set(found), {('10.0.0.8', 53, 'udp')})
+        # UDP has no handshake; anything with a peer counts as used.
+        self.assertTrue(found[('10.0.0.8', 53, 'udp')])
+
+    def test_each_block_is_labelled_with_the_table_it_came_from(self):
+        found = sockstack.parse_proc_net(
+            tables(tcp=PROC_NET_TCP, udp=PROC_NET_UDP), 10132)
+        self.assertEqual({proto for _, _, proto in found}, {'tcp', 'udp'})
 
     def test_a_truncated_row_is_skipped_not_fatal(self):
-        self.assertEqual(sockstack.parse_proc_net('garbage\n1: 2: 3:\n', 10132), set())
+        self.assertEqual(sockstack.parse_proc_net('garbage\n1: 2: 3:\n', 10132), {})
 
     def test_no_input(self):
-        self.assertEqual(sockstack.parse_proc_net('', 10132), set())
+        self.assertEqual(sockstack.parse_proc_net('', 10132), {})
 
 
 STAMP = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
@@ -560,41 +594,153 @@ STAMP = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
 
 class KernelCrossCheck(unittest.TestCase):
     """A target whose networking bypasses libc leaves the tracer with nothing,
-    and its traffic then looks exactly like another app's. The kernel's socket
-    table is what tells the two apart — and saying so is the whole point, so the
-    summary has to surface it rather than quietly widen the target set."""
+    and its traffic then looks like any other app's. The kernel's socket table
+    tells the two apart — but only if the report distinguishes what it found
+    from whether it was in a position to find anything."""
 
-    def summarize(self, uid_peers, tracer_ip='198.51.100.5'):
+    def summarize(self, blob, tracer_ip='198.51.100.5', tracer_port=443):
         out = tempfile.mkdtemp()
         with open(os.path.join(out, 'socket_trace.json'), 'w') as fh:
-            json.dump([{'peer_ip': tracer_ip, 'peer_port': 443,
+            json.dump([{'peer_ip': tracer_ip, 'peer_port': tracer_port,
                         'socket_event_type': 'connect', 'stack_source': 'java',
                         'stack': [frame('com.example.A.go(A.java:1)')]}], fh)
-        with open(os.path.join(out, 'uid_sockets.json'), 'w') as fh:
-            json.dump({'uid': 10192,
-                       'peers': [{'ip': ip, 'port': port} for ip, port in uid_peers]}, fh)
+        if blob is not None:
+            with open(os.path.join(out, 'uid_sockets.json'), 'w') as fh:
+                json.dump(blob, fh)
         sockstack.decrypt_and_summarize(out, 'com.example.app', stamp=STAMP)
         with open(os.path.join(out, 'summary_20260101T000000Z.md')) as fh:
             return fh.read()
 
+    @staticmethod
+    def blob(peers, status='ok', **extra):
+        return {'uid': 10192, 'status': status, 'polls_succeeded': 3,
+                'polls_failed': 0, 'shared_with': [],
+                'peers': [{'ip': ip, 'port': port, 'proto': proto,
+                           'established': established}
+                          for ip, port, proto, established in peers], **extra}
+
     def test_a_destination_the_tracer_missed_is_reported_as_the_targets(self):
-        report = self.summarize([('203.0.113.9', 8443)])
-        self.assertIn('Traffic the tracer never saw', report)
+        report = self.summarize(self.blob([('203.0.113.9', 8443, 'tcp', True)]))
+        self.assertIn('Traffic the tracer has no record of', report)
         self.assertIn('203.0.113.9:8443', report)
-        self.assertIn('1 unseen by the tracer', report)
+        self.assertIn('1 with no tracer record', report)
+
+    def test_the_section_offers_reasons_rather_than_asserting_one(self):
+        """Raw syscalls are one explanation among several — an idle socket held
+        across an attach produces the same evidence — and naming only the
+        exciting one would be the tool stating more than it knows."""
+        report = self.summarize(self.blob([('203.0.113.9', 8443, 'tcp', True)]))
+        self.assertIn('already open and idle when instrumentation attached', report)
+        self.assertIn('raw syscalls', report)
+
+    def test_an_unestablished_connection_is_not_called_a_contact(self):
+        report = self.summarize(self.blob([('203.0.113.9', 8443, 'tcp', False)]))
+        self.assertIn('attempted, never established', report)
+
+    def test_a_second_port_on_a_known_address_is_still_a_miss(self):
+        """Comparing addresses alone hides a second channel to a host the tracer
+        already knows — a payload reusing the app's own CDN address on another
+        port is precisely what wants flagging."""
+        report = self.summarize(self.blob([('198.51.100.5', 9999, 'tcp', True)]))
+        self.assertIn('198.51.100.5:9999', report)
+        self.assertIn('1 with no tracer record', report)
 
     def test_agreement_produces_no_alarm(self):
-        # The tracer already saw this one: a cross-check that cries wolf on every
-        # well-behaved app would be ignored by the time it mattered.
-        report = self.summarize([('198.51.100.5', 443)])
-        self.assertNotIn('Traffic the tracer never saw', report)
-        self.assertIn('0 unseen by the tracer', report)
+        # A check that cried wolf on every well-behaved app would be ignored by
+        # the time it mattered.
+        report = self.summarize(self.blob([('198.51.100.5', 443, 'tcp', True)]))
+        self.assertNotIn('Traffic the tracer has no record of', report)
+        self.assertIn('0 with no tracer record', report)
 
-    def test_without_the_cross_check_the_line_is_absent_entirely(self):
-        out = tempfile.mkdtemp()
-        with open(os.path.join(out, 'socket_trace.json'), 'w') as fh:
-            json.dump([], fh)
-        sockstack.decrypt_and_summarize(out, 'com.example.app', stamp=STAMP)
-        with open(os.path.join(out, 'summary_20260101T000000Z.md')) as fh:
-            report = fh.read()
-        self.assertNotIn('Kernel cross-check', report)
+    def test_an_unresolved_uid_is_reported_as_a_check_that_did_not_run(self):
+        report = self.summarize(self.blob([], status='no-uid'))
+        self.assertIn('Kernel cross-check did not run', report)
+        self.assertNotIn('0 with no tracer record', report)
+
+    def test_an_unreadable_proc_is_not_silence(self):
+        """Empty because /proc was unreadable must not read like empty because
+        there was nothing there."""
+        report = self.summarize(self.blob([], status='unreadable', polls_failed=7))
+        self.assertIn('Kernel cross-check failed', report)
+        self.assertIn('7 attempt(s)', report)
+
+    def test_a_shared_uid_is_declared_not_assumed_away(self):
+        report = self.summarize(self.blob([('203.0.113.9', 8443, 'tcp', True)],
+                                          shared_with=['com.other.app']))
+        self.assertIn('is shared with com.other.app', report)
+
+    def test_a_run_without_the_artifact_says_so_rather_than_staying_silent(self):
+        """No line at all made four different situations look identical, one of
+        which was 'the check agreed with the tracer'."""
+        report = self.summarize(None)
+        self.assertIn('no record for this run', report)
+
+
+class UidResolution(unittest.TestCase):
+    """`resolve_uid` decides whose sockets get relabelled as the target's. Both
+    of its branches are string parsing over device output, and until this it was
+    the only new function with no test at all."""
+
+    LISTING = ('package:com.example.app uid:10192\n'
+               'package:com.other.app uid:10193\n'
+               'package:com.shared.a uid:10250\n'
+               'package:com.shared.b uid:10250\n')
+
+    def resolve(self, package, listing=None, stat_out=''):
+        class Result:
+            def __init__(self, stdout):
+                self.stdout = stdout
+                self.returncode = 0
+        adb_original, priv_original = sockstack.adb, sockstack.priv
+        sockstack.adb = lambda *a, **k: Result(self.LISTING if listing is None else listing)
+        sockstack.priv = lambda *a, **k: Result(stat_out)
+        try:
+            return sockstack.resolve_uid('emulator-5554', package)
+        finally:
+            sockstack.adb, sockstack.priv = adb_original, priv_original
+
+    def test_exact_package_match(self):
+        self.assertEqual(self.resolve('com.example.app'), (10192, []))
+
+    def test_a_shared_uid_names_the_other_packages(self):
+        # Silently folding another package's sockets into the target's would be
+        # the confident wrong answer this whole check exists to prevent.
+        self.assertEqual(self.resolve('com.shared.a'), (10250, ['com.shared.b']))
+
+    def test_a_frida_label_resolves_to_nothing_here(self):
+        """Attaching names a process the way Frida does — `Chrome`, not
+        `com.android.chrome` — which matches no package. The caller has to learn
+        this rather than be handed a plausible wrong UID."""
+        self.assertEqual(self.resolve('Chrome'), (None, []))
+
+    def test_falls_back_to_the_data_directory_owner(self):
+        self.assertEqual(self.resolve('com.example.app', listing='', stat_out='10199\n'),
+                         (10199, []))
+
+    def test_no_answer_anywhere(self):
+        self.assertEqual(self.resolve('com.example.app', listing='', stat_out='?'),
+                         (None, []))
+
+
+class UidFromPid(unittest.TestCase):
+    """The fallback that keeps the cross-check alive under --attach, which is
+    the documented mode for samples with no launcher activity."""
+
+    STATUS = 'Name:\tcom.example.app\nState:\tS (sleeping)\nUid:\t10192\t10192\t10192\t10192\n'
+
+    def uid(self, status):
+        class Result:
+            stdout = status
+            returncode = 0
+        original = sockstack.priv
+        sockstack.priv = lambda *a, **k: Result()
+        try:
+            return sockstack.uid_from_pid('emulator-5554', 4242)
+        finally:
+            sockstack.priv = original
+
+    def test_reads_the_real_uid(self):
+        self.assertEqual(self.uid(self.STATUS), 10192)
+
+    def test_a_process_that_vanished_yields_nothing(self):
+        self.assertIsNone(self.uid(''))

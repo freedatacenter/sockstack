@@ -59,6 +59,7 @@ a dependency, used through its public plugin API.
 | `socket_trace.jsonl` | the same records, written as they arrive — survives a run that is cut short |
 | `socket_trace_counts.json` | total operations per peer, including those collapsed by de-duplication |
 | `socket_trace_meta.json` | which libc functions were hooked, which were absent, tracer errors |
+| `uid_sockets.json` | the kernel's own list of sockets owned by the target, and whether that check could run at all |
 | `sslkeylog.txt` | TLS secrets, NSS keylog format |
 | `traffic.pcap` | raw capture from the device |
 | `decrypted.pcapng` | the capture with secrets injected — opens decrypted in Wireshark |
@@ -177,11 +178,14 @@ Read these before trusting an empty result.
 - **Only libc is hooked.** A runtime that issues raw syscalls — Go/gomobile, a
   statically linked payload — never passes through it, so there is nothing for the
   tracer to record and nothing to attribute. The tool does not pretend otherwise:
-  every run also polls the kernel's socket table for connections owned by the
-  target's own UID, and any destination found there but missing from the tracer is
-  reported under **Traffic the tracer never saw**. That is sampled every two
-  seconds, so a short-lived connection can still slip between polls — the check
-  turns a silent blind spot into a named one; it does not remove it.
+  every device run also polls the kernel's `/proc/net/{tcp,tcp6,udp,udp6}` for
+  sockets owned by the target's own UID, and any destination found there but
+  missing from the tracer is reported under **Traffic the tracer has no record
+  of**. That is sampled every two seconds, so a short-lived connection can still
+  slip between polls; the check turns a silent blind spot into a named one, it
+  does not remove it. It reports its own state as well — an unresolved UID, an
+  unreadable `/proc/net`, or a UID shared with other packages — so that a clean
+  result cannot be confused with a check that never ran.
 - **Native threads have no Java stack.** Cronet's network thread, JNI code and
   non-JVM runtimes produce records with no attribution. Those peers are listed
   separately in the summary rather than silently dropped — and separately from

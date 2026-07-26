@@ -257,14 +257,24 @@ A third line appears on device runs:
 - Kernel cross-check (uid 10192): 1 destination owned by the target, 0 unseen by the tracer
 ```
 
-The tracer only sees what goes through libc. The kernel sees every socket and who
-owns it, so this is a second, independent account of where the target went. When
-the two agree — `0 unseen` — the attribution above covers the target's traffic.
-When they do not, a section named **Traffic the tracer never saw** lists the
-difference: those destinations are the target's, they simply cannot be tied to a
-call site. That is what a Go runtime or a statically linked payload looks like
-from here, and without the check its C2 would have been printed further down as
-somebody else's.
+The tracer only sees what goes through libc. The kernel knows who owns every TCP
+and UDP socket regardless, so this is a second, independent account of where the
+target went. When the two agree — `0 with no tracer record` — nothing the kernel
+saw is missing from the tracer's view. That is a statement about which sockets
+were observed, **not** about attribution: whether those sockets have call stacks
+is the `Record stack sources` line's business, and a run with a broken Java
+bridge can still show perfect agreement here.
+
+When they disagree, a section named **Traffic the tracer has no record of** lists
+the difference. Those destinations are the target's and cannot be tied to a call
+site; the section gives the candidate reasons rather than picking one, because a
+raw-syscall payload and a socket held open across an `--attach` leave identical
+evidence here.
+
+The line also reports when the check could not run at all — an unresolved UID, an
+unreadable `/proc/net` — because "found nothing" and "never looked" must not read
+the same. If the target's UID is shared with other packages, that is stated too:
+their sockets are indistinguishable from the target's to this check.
 
 `Record stack sources` accounts for **every** record. The numbers add up to the
 record count by construction — if they did not, records would be vanishing
@@ -334,13 +344,15 @@ So the DNS, SNI and HTTP sections mark each entry:
 
 ```
 - `f-droid.org` — 2 — **target**
-- `n7k2q9x4m1v8.backend.example` — 1 — other process
+- `n7k2q9x4m1v8.backend.example` — 1 — not attributed
 ```
 
-`target` means the tracer itself saw the process contact that address. Unmarked
-entries were resolved or contacted by something else on the device. On a device
-where you are detonating malware, this distinction is the difference between
-attributing a C2 to your sample and attributing your neighbour's traffic to it.
+`target` means the target was seen to contact that address — by the tracer, or
+by the kernel cross-check. `not attributed` means neither saw it: usually another
+process on the device, but the tool does not claim that, because it cannot know
+it. On a device where you are detonating malware, this distinction is the
+difference between attributing a C2 to your sample and attributing your
+neighbour's traffic to it — in both directions.
 
 ---
 
