@@ -168,6 +168,53 @@ class SummarizeTrace(unittest.TestCase):
         self.assertEqual(len(attribution), 2)
         self.assertNotEqual(attribution[0]['app_frames'], attribution[1]['app_frames'])
 
+    def test_a_group_that_splits_unevenly_is_disambiguated_to_the_end(self):
+        """Three call sites entering the library at the same frame. The first
+        depth at which they differ separates one of them and leaves the other
+        two identical to each other — those diverge two frames deeper. A single
+        extension pass treats the group as handled and prints two of the three
+        lines the same way.
+
+        Real case, F-Droid over okhttp: `readConnectionPreface` and the frame
+        reading loop both sit under `RealBufferedSource.request`, while a third
+        read enters through `RealBufferedSource.read` and splits off early. The
+        earlier fix covered groups of two, where one pass is enough.
+        """
+        def rec(signature, tail):
+            return {'peer_ip': '1.2.3.4', 'peer_port': 443,
+                    'socket_event_type': 'read', 'stack_source': 'java',
+                    'stack_signature': signature,
+                    'stack': [frame('okio.InputStreamSource.read(JvmOkio.kt:93)'),
+                              frame('okio.AsyncTimeout$source$1.read(AsyncTimeout.kt:153)')]
+                             + [frame(text) for text in tail]}
+        shared = ['okio.RealBufferedSource.request(RealBufferedSource.kt:63)',
+                  'okhttp3.internal.http2.Http2Reader.nextFrame(Http2Reader.kt:89)']
+        records = [
+            rec('sig-a', shared + ['okhttp3.internal.http2.Http2Reader'
+                                   '.readConnectionPreface(Http2Reader.kt:73)']),
+            rec('sig-b', shared + ['okhttp3.internal.http2.Http2Connection$ReaderRunnable'
+                                   '.invoke(Http2Connection.kt:618)']),
+            rec('sig-c', ['okio.RealBufferedSource.read(RealBufferedSource.kt:42)']),
+        ]
+        _, attribution, _, _ = droidtrace.summarize_trace(records)
+        self.assertEqual(len(attribution), 3)
+        rendered = {(item['peer'], tuple(item['app_frames']), item['via'])
+                    for item in attribution}
+        self.assertEqual(len(rendered), 3, 'two entries render identically')
+
+    def test_disambiguation_terminates_on_stacks_it_cannot_separate(self):
+        """Two records the agent called distinct, whose visible frames are the
+        same to the last one. Nothing can tell them apart in the display, and
+        the loop must stop rather than spin looking for a frame that is not
+        there."""
+        def rec(signature):
+            return {'peer_ip': '1.2.3.4', 'peer_port': 443,
+                    'socket_event_type': 'read', 'stack_source': 'java',
+                    'stack_signature': signature,
+                    'stack': [frame('okio.Source.read(JvmOkio.kt:93)')]}
+        _, attribution, _, _ = droidtrace.summarize_trace([rec('sig-a'), rec('sig-b')])
+        self.assertEqual(len(attribution), 2)
+
     def test_identical_signatures_still_collapse(self):
         rec = {'peer_ip': '1.2.3.4', 'peer_port': 443, 'socket_event_type': 'write',
                'stack_source': 'java', 'stack_signature': 'sig-a',
@@ -417,3 +464,35 @@ class SplitRow(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class DeviceArch(unittest.TestCase):
+    """Frida's releases are named by architecture, not by Android ABI. A hint
+    that echoes the ABI back — `frida-server-…-android-arm64-v8a` — points at a
+    file that has never existed, and the reader who follows it concludes the
+    download is broken rather than their guess."""
+
+    def arch_for(self, abi):
+        class Result:
+            stdout = abi + '\n'
+        original = droidtrace.adb
+        droidtrace.adb = lambda *args, **kwargs: Result()
+        try:
+            return droidtrace.device_arch('emulator-5554')
+        finally:
+            droidtrace.adb = original
+
+    def test_arm64_abi_maps_to_the_frida_release_name(self):
+        self.assertEqual(self.arch_for('arm64-v8a'), ('arm64-v8a', 'arm64'))
+
+    def test_arm32_abi_maps_to_the_frida_release_name(self):
+        self.assertEqual(self.arch_for('armeabi-v7a'), ('armeabi-v7a', 'arm'))
+
+    def test_x86_64_is_named_the_same_by_both(self):
+        self.assertEqual(self.arch_for('x86_64'), ('x86_64', 'x86_64'))
+
+    def test_an_unrecognised_abi_does_not_invent_a_filename(self):
+        self.assertEqual(self.arch_for('riscv64'), ('riscv64', '<arch>'))
+
+    def test_a_silent_device_is_reported_as_unknown(self):
+        self.assertEqual(self.arch_for(''), ('unknown', '<arch>'))

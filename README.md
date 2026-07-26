@@ -79,14 +79,25 @@ pip install -r requirements.txt          # friTap 2.x + frida 17.x
 
 ## Quick start
 
+The commands, in order. For the same sequence with real output at every step —
+what a healthy run prints, which alarming-looking lines are normal, and how to
+read the report section by section — see [**docs/USAGE.md**](docs/USAGE.md).
+
 ```bash
 # 0. Check the toolchain without a device at all — runs against a local process
 python3 droidtrace.py --host --package "/usr/bin/curl -s https://example.com" \
     --output ./selftest --duration 30
 
 # 1. Provision the device (frida-server 17.x, and tcpdump if it is a stock phone)
+#    The architecture in the filename is Frida's, not Android's: a device
+#    reporting arm64-v8a needs …-android-arm64. The script prints the ABI,
+#    starts what it pushed, and fails here — not mid-run — if it will not run.
 ./setup-device.sh emulator-5554 ./frida-server-17.2.0-android-arm64
 adb -s emulator-5554 reboot        # the perfetto workaround is a persist prop
+
+#    You do not have to start frida-server yourself: droidtrace launches it,
+#    and restarts it if a previous session left it wedged. Provisioning only
+#    has to put a working binary on the device.
 
 # 2. Install the target app, but do not launch it
 adb -s emulator-5554 install -r target.apk

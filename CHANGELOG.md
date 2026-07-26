@@ -1,5 +1,57 @@
 # Changelog
 
+## 2.2.2
+
+### Added — `docs/USAGE.md`
+
+A walkthrough from an empty directory to an attributed report, with the real
+output of every step. It exists because the README lists what the commands are
+and not what a healthy run looks like: several lines that read as failures
+(`friTap did not stop within 30s`, `not hooked (absent from this libc)`,
+`decryption: not attempted`) are normal and expected, and a reader with no way
+to tell those from real breakage will either stop at the first one or ignore all
+of them. It also covers reading the report section by section, what each
+unattributed reason licenses you to conclude, and what the tool will not tell
+you.
+
+### Fixed — disambiguation gave up after one frame
+
+2.2.1 made colliding entries reach deeper for a frame that tells them apart, but
+it extended the display once and considered the group handled. A group of two
+always splits on the first differing frame; a group of three or more usually
+does not. The first differing depth separates one member and leaves the rest
+identical to each other, and those were still printed as the same line.
+
+Found by running the tool against F-Droid, whose okhttp reader enters the
+library at the same frame from several places: `readConnectionPreface` and the
+frame-reading loop both sit under `RealBufferedSource.request` and diverge five
+frames further down, and two writes shared `Http2Writer.flush` while one was
+sending request headers and the other finishing the request body. Four of twelve
+call sites in that report were two pairs of identical-looking lines.
+
+Disambiguation now repeats — regrouping on what is currently displayed and
+extending again — until every entry renders differently or the stacks run out of
+frames to distinguish them. A per-item cursor tracks how deep the display has
+reached, since the frame appended at depth 7 is the fourth one shown.
+
+### Fixed — provisioning could not tell a working frida-server from a useless one
+
+`setup-device.sh` pushed the binary, chmod'd it, and declared success. A
+frida-server built for the wrong architecture pushes and chmods exactly like a
+correct one, so the failure surfaced much later, inside a run, as a
+twenty-second wait and `could not bring frida-server up` — a message that named
+neither the cause nor the fix.
+
+The script now starts what it pushed and waits for it, so the failure lands at
+provisioning time, next to the binary in question, and says which ABI the device
+reports against which file was pushed. It also refuses to report success when
+there is no frida-server on the device at all and none was supplied.
+
+Both here and in the runner, the suggested download now names the architecture
+the way Frida's releases do: a device reporting `arm64-v8a` needs
+`…-android-arm64`, and echoing the ABI back pointed at a file that never
+existed.
+
 ## 2.2.1
 
 ### Fixed — the runner and the agent disagreed on what "the same call site" is

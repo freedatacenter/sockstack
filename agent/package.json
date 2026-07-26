@@ -1,6 +1,6 @@
 {
   "name": "droidtrace-agent",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "private": true,
   "description": "Frida agent for droidtrace: socket operations with Java call-stack attribution",
   "type": "module",

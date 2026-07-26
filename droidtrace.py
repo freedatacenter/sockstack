@@ -49,10 +49,13 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
-__version__ = '2.2.1'
+__version__ = '2.2.2'
 
 DEV_PCAP = '/data/local/tmp/droidtrace_capture.pcap'
 FRIDA_SERVER = '/data/local/tmp/frida-server'
+# Android ABI -> the architecture name in Frida's release filenames.
+FRIDA_ARCH = {'arm64-v8a': 'arm64', 'armeabi-v7a': 'arm', 'armeabi': 'arm',
+              'x86_64': 'x86_64', 'x86': 'x86'}
 # The agent is a compiled bundle: Frida 17 removed the built-in Java bridge, so
 # it has to be bundled in (see agent/ and docs/GOTCHAS.md).
 DEFAULT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -392,6 +395,17 @@ def frida_server_alive(serial, device_id):
         return False
 
 
+def device_arch(serial):
+    """(ABI as Android reports it, the name Frida uses for that architecture).
+
+    Frida's releases are not named after the Android ABI string — a device
+    reporting `arm64-v8a` needs `frida-server-…-android-arm64` — so a hint that
+    echoes the ABI back sends the reader to a file that does not exist.
+    """
+    abi = (adb(serial, 'shell', 'getprop ro.product.cpu.abi').stdout or '').strip()
+    return abi or 'unknown', FRIDA_ARCH.get(abi, '<arch>')
+
+
 def ensure_frida_server(serial, device_id):
     if detect_privilege(serial) == 'none':
         print('[!] no root on the device — Frida cannot hook. '
@@ -405,9 +419,10 @@ def ensure_frida_server(serial, device_id):
     priv(serial, f'pkill -f {os.path.basename(FRIDA_SERVER)}')
     time.sleep(2)
     if not device_has(serial, f'test -x {shlex.quote(FRIDA_SERVER)}'):
+        abi, arch = device_arch(serial)
         print(f'[!] {FRIDA_SERVER} is missing or not executable. Push a frida-server '
-              f'17.x matching the device architecture:\n'
-              f'    ./setup-device.sh {serial} ./frida-server-17.x.y-android-arm64')
+              f'17.x for this device (ABI {abi}):\n'
+              f'    ./setup-device.sh {serial} ./frida-server-17.x.y-android-{arch}')
         return False
     priv_background(serial, f'nohup {FRIDA_SERVER} --daemonize >/dev/null 2>&1 &')
     for _ in range(10):
@@ -415,7 +430,15 @@ def ensure_frida_server(serial, device_id):
         if frida_server_alive(serial, device_id):
             print('[+] frida-server up')
             return True
-    print('[!] could not bring frida-server up')
+    # The binary is present and executable, so the interesting failure is not
+    # "it is missing" — it is almost always the wrong architecture, which looks
+    # identical on disk. Name that, and give the one command that confirms it.
+    abi, arch = device_arch(serial)
+    print('[!] could not bring frida-server up. It is on the device and '
+          'executable, so the usual cause is an architecture mismatch:\n'
+          f'    this device reports ABI {abi}, which needs '
+          f'frida-server-17.x.y-android-{arch}.\n'
+          f'    Confirm with: adb -s {serial} shell {FRIDA_SERVER} --version')
     return False
 
 
@@ -575,31 +598,58 @@ def disambiguate_attribution(attribution):
     the display shows or further down the library chain. Two identical-looking
     lines read as an accidental duplicate, which invites the reader to discount
     one of two real findings. Show the first frame that actually differs.
+
+    Adding one frame is not enough. A group of three or more rarely splits
+    evenly: the first differing depth may separate one member and leave the
+    rest identical to each other. So this repeats — regrouping on what is now
+    displayed and extending again — until every entry renders differently or
+    the stacks themselves run out of frames to tell them apart. A per-item
+    cursor records how deep the display has already reached, because the frame
+    appended at depth 7 is the fourth one shown, and resuming from the count of
+    shown frames would re-examine depths already ruled out.
     """
-    def extend(members, key, chains, shown):
-        start = max(shown, 1)
-        for depth in range(start, max((len(c) for c in chains), default=0)):
+    def extend(members, key, chain_key, cursor_key):
+        chains = [item.get(chain_key) or [] for item in members]
+        start = max(item.get(cursor_key, 0) for item in members)
+        for depth in range(max(start, 1), max((len(c) for c in chains), default=0)):
             level = [c[depth] if depth < len(c) else None for c in chains]
             if len(set(level)) > 1:
                 for item, frame in zip(members, level):
                     if frame:
                         item[key] = ((item[key] + [frame]) if key == 'app_frames'
                                      else f'{item[key]} → {frame}')
+                    item[cursor_key] = depth + 1
                 return True
         return False
 
-    groups = {}
+    def displayed(item):
+        return item['peer'], tuple(item['app_frames']), item['via']
+
     for item in attribution:
-        groups.setdefault(
-            (item['peer'], tuple(item['app_frames']), item['via']), []).append(item)
-    for members in groups.values():
-        if len(members) < 2:
-            continue
-        shown = len(members[0]['app_frames'])
-        if extend(members, 'app_frames',
-                  [item.get('app_chain') or [] for item in members], shown):
-            continue
-        extend(members, 'via', [item.get('via_chain') or [] for item in members], 1)
+        item['_app_depth'] = len(item['app_frames'])
+        item['_via_depth'] = 1 if item['via'] else 0
+
+    # Bounded by the deepest stack: every round advances at least one cursor,
+    # and a cursor never moves backwards, so this cannot spin.
+    rounds = max((len(item.get('app_chain') or []) + len(item.get('via_chain') or [])
+                  for item in attribution), default=0) + 1
+    for _ in range(rounds):
+        groups = {}
+        for item in attribution:
+            groups.setdefault(displayed(item), []).append(item)
+        collisions = [members for members in groups.values() if len(members) > 1]
+        if not collisions:
+            break
+        progressed = False
+        for members in collisions:
+            if (extend(members, 'app_frames', 'app_chain', '_app_depth')
+                    or extend(members, 'via', 'via_chain', '_via_depth')):
+                progressed = True
+        if not progressed:      # the stacks are genuinely indistinguishable
+            break
+
+    for item in attribution:
+        del item['_app_depth'], item['_via_depth']
     return attribution
 
 

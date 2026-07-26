@@ -46,13 +46,60 @@ fi
 ABI="$(adb -s "$SERIAL" shell getprop ro.product.cpu.abi | tr -d '\r')"
 echo "[+] device ABI: ${ABI:-unknown}"
 
+# Frida's release artefacts are not named after the Android ABI string: a device
+# reporting arm64-v8a needs frida-server-…-android-arm64. Translate, so the
+# download hint below points at a file that exists.
+case "$ABI" in
+    arm64-v8a)            FRIDA_ARCH=arm64 ;;
+    armeabi-v7a|armeabi)  FRIDA_ARCH=arm ;;
+    x86_64)               FRIDA_ARCH=x86_64 ;;
+    x86)                  FRIDA_ARCH=x86 ;;
+    *)                    FRIDA_ARCH='<arch>' ;;
+esac
+
 if [ -n "$FRIDA_BIN" ]; then
     echo "[+] pushing frida-server: $FRIDA_BIN"
     echo "    (this must be a frida-server 17.x built for ${ABI:-the device ABI})"
     adb -s "$SERIAL" push "$FRIDA_BIN" "$FRIDA_DST"
     SU "chmod 755 '$FRIDA_DST'"
+
+    # A frida-server for the wrong architecture pushes and chmods exactly like a
+    # correct one: the file is there and executable, so provisioning "succeeds"
+    # and the failure surfaces much later, inside a run, as a twenty-second wait
+    # and "could not bring frida-server up". Start it here instead, where the
+    # binary being pushed is still in front of us and the cause can be named.
+    echo "[+] verifying frida-server actually runs on this device"
+    SU "pkill -f '$FRIDA_DST'" >/dev/null 2>&1 || true
+    sleep 1
+    SU "nohup '$FRIDA_DST' --daemonize >/dev/null 2>&1 &" >/dev/null 2>&1 || true
+    RUNNING=""
+    for _ in 1 2 3 4 5 6 7 8; do
+        sleep 1
+        if [ -n "$(adb -s "$SERIAL" shell "pidof $(basename "$FRIDA_DST")" | tr -d '\r')" ]; then
+            RUNNING=yes
+            break
+        fi
+    done
+    if [ -n "$RUNNING" ]; then
+        echo "[+] frida-server is up and stays up"
+    else
+        echo "[!] frida-server was pushed but will not stay running." >&2
+        echo "    Most likely the binary does not match this device: it reports" >&2
+        echo "    ABI '${ABI:-unknown}', and you pushed $(basename "$FRIDA_BIN")." >&2
+        echo "    Download frida-server-17.x.y-android-${FRIDA_ARCH}.xz, unpack it," >&2
+        echo "    and run this script again. Check by hand with:" >&2
+        echo "      adb -s $SERIAL shell '$FRIDA_DST --version'" >&2
+        exit 1
+    fi
+elif SU "test -x '$FRIDA_DST'"; then
+    echo "[i] no frida-server binary given — one is already on the device"
+    echo "    (droidtrace starts it on demand; pass a binary as arg 2 to replace it)"
 else
-    echo "[i] no frida-server binary given — skipping (pass it as arg 2)"
+    echo "[!] no frida-server on the device and none given as arg 2." >&2
+    echo "    droidtrace cannot hook anything without it. Download a matching" >&2
+    echo "    frida-server 17.x for ABI '${ABI:-unknown}' and re-run:" >&2
+    echo "      ./setup-device.sh $SERIAL ./frida-server-17.x.y-android-${FRIDA_ARCH}" >&2
+    exit 1
 fi
 
 # On some Android 14 arm64 images perfetto's heap profiling raises SIGSEGV and
