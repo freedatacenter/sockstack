@@ -102,6 +102,12 @@ adb -s emulator-5554 reboot        # the perfetto workaround is a persist prop
 # 2. Install the target app, but do not launch it
 adb -s emulator-5554 install -r target.apk
 
+#    The next step needs the package name, which the filename need not resemble
+#    — one real sample ships as Gov-Services.apk, installs as com.k4m2p9.zx7qwd
+#    and labels itself "Gov Services". Ask the file, or ask the device:
+aapt dump badging target.apk | awk -F"'" '/^package/{print $2}'   # build-tools
+adb -s emulator-5554 shell pm list packages -3                    # or diff this
+
 # 3. Run — spawns the app and hooks it from the start
 python3 droidtrace.py --device emulator-5554 \
     --package com.example.app --output ./run --duration 200

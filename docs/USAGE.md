@@ -126,7 +126,7 @@ it on demand, and restarts it if a previous session left it wedged.
 
 ---
 
-## Step 4 — install the target, but do not launch it
+## Step 4 — install the target and find out what it is called
 
 ```bash
 adb -s emulator-5554 install -r target.apk
@@ -136,13 +136,68 @@ Leave it un-launched. The next step spawns it, so that hooks are in place before
 its first instruction — including whatever it does in `Application.onCreate`,
 which is where a lot of interesting behaviour lives.
 
+### The three names
+
+The next step needs a **package name**, and the file you just installed does not
+have to be called anything like it. A real sample from a recent campaign:
+
+| | |
+|---|---|
+| file name | `Gov-Services.apk` |
+| package name | `com.k4m2p9.zx7qwd` |
+| app label on screen | `Gov Services_v14.2` |
+
+Three different strings for one app, and each is used somewhere different. The
+file name is whoever saved it; the package name is the identity Android uses;
+the label is what the user sees. Malware picks them independently, and a
+plausible-looking guess will simply fail.
+
+### Getting the package name
+
+If you have Android build-tools, ask the file directly — this works before
+installing anything:
+
+```bash
+aapt dump badging target.apk | awk -F"'" '/^package/{print $2}'
+```
+
+If you do not, ask the device. Third-party packages sorted by install time put
+the one you just installed last, so this needs no snapshot taken beforehand and
+no extra tooling:
+
+```bash
+for p in $(adb -s emulator-5554 shell pm list packages -3 | sed 's/package://' | tr -d '\r'); do
+    t=$(adb -s emulator-5554 shell dumpsys package $p | grep -m1 firstInstallTime | tr -d '\r' | sed 's/.*=//')
+    echo "$t  $p"
+done | sort
+```
+
+```
+2026-07-26 10:34:34  org.fdroid.fdroid
+2026-07-26 13:07:41  com.samplevpn.core
+2026-07-26 21:05:33  com.k4m2p9.zx7qwd        <- just installed
+```
+
+### When you need the label instead
+
+`--package` takes the **package name** when spawning, which is the normal case.
+
+With `--attach` it is different: Frida identifies the main process of a
+foreground app by its **label**, so `--package com.android.chrome` reports
+"unable to find process" while Chrome is plainly on screen — it is listed as
+`Chrome`. When an attach fails, the runner prints the processes the device is
+actually offering, matched against what you asked for, so you can pick the right
+string instead of guessing.
+
 ---
 
 ## Step 5 — run
 
+`--package` is the package name from Step 4, not the filename you installed:
+
 ```bash
 python3 droidtrace.py --device emulator-5554 \
-    --package com.example.app --output ./run --duration 200
+    --package com.k4m2p9.zx7qwd --output ./run --duration 200
 ```
 
 While it runs, **drive the app**. A tracer attached to an idle app records an
