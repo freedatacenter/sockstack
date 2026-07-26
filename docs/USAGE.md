@@ -251,6 +251,21 @@ material comes first.
 `Java bridge: available` is the line that matters. Without it there is no
 attribution at all, and everything below will say so.
 
+A third line appears on device runs:
+
+```
+- Kernel cross-check (uid 10192): 1 destination owned by the target, 0 unseen by the tracer
+```
+
+The tracer only sees what goes through libc. The kernel sees every socket and who
+owns it, so this is a second, independent account of where the target went. When
+the two agree — `0 unseen` — the attribution above covers the target's traffic.
+When they do not, a section named **Traffic the tracer never saw** lists the
+difference: those destinations are the target's, they simply cannot be tied to a
+call site. That is what a Go runtime or a statically linked payload looks like
+from here, and without the check its C2 would have been printed further down as
+somebody else's.
+
 `Record stack sources` accounts for **every** record. The numbers add up to the
 record count by construction — if they did not, records would be vanishing
 silently.
@@ -373,6 +388,10 @@ Java runtime and bridge were present, and any tracer errors.
 - **Anything about a process it is not attached to.** Traffic from other
   processes appears in the capture and is marked as not-target; it is never
   attributed.
+- **Which code made a connection that bypassed libc.** The kernel cross-check
+  will tell you the connection was the target's, and that is all: there is no
+  hooked call, so there is no stack. It also samples every two seconds, so a
+  connection opened and closed between polls is missed by both.
 - **Every call site, exhaustively.** Stack walking is budgeted per destination
   so that a chatty socket cannot starve the run. When the budget bounds a result,
   the report says so rather than presenting a partial list as complete.

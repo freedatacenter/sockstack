@@ -175,8 +175,13 @@ command line, so a report cannot misstate which target it belongs to.
 Read these before trusting an empty result.
 
 - **Only libc is hooked.** A runtime that issues raw syscalls — Go/gomobile, a
-  statically linked payload — is invisible to the tracer. The summary cannot tell
-  you this; the absence of records is not evidence of absence of traffic.
+  statically linked payload — never passes through it, so there is nothing for the
+  tracer to record and nothing to attribute. The tool does not pretend otherwise:
+  every run also polls the kernel's socket table for connections owned by the
+  target's own UID, and any destination found there but missing from the tracer is
+  reported under **Traffic the tracer never saw**. That is sampled every two
+  seconds, so a short-lived connection can still slip between polls — the check
+  turns a silent blind spot into a named one; it does not remove it.
 - **Native threads have no Java stack.** Cronet's network thread, JNI code and
   non-JVM runtimes produce records with no attribution. Those peers are listed
   separately in the summary rather than silently dropped — and separately from
@@ -197,10 +202,10 @@ Read these before trusting an empty result.
   keeps real destinations in both places and the marking holds.
 - **The packet capture is device-wide.** DNS, SNI and HTTP are read from it, so
   they can include other applications' traffic. Each of those entries is marked
-  **target** when its address matches one the tracer saw the target contact, and
-  *other process* when it does not — but the marking depends on the tracer having
-  seen the connection, so treat an unmarked host as "not attributed", not as
-  "proven unrelated".
+  **target** when its address matches one the target was seen to contact — by the
+  tracer, or by the kernel cross-check above. Unmarked means neither saw it, which
+  is usually another process and is never proof of one: read it as "not
+  attributed", not as "proven unrelated".
 
 ## Maturity
 

@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.3.0
+
+### Added — a kernel cross-check, so a blind spot cannot pass for someone else's traffic
+
+The tracer hooks libc. A payload that issues raw syscalls — a Go runtime, a
+statically linked binary — never goes through it, so there is no record to make
+and nothing to attribute. That much was already documented. What was not
+acknowledged is the consequence: the traffic still lands in the device-wide
+capture, nothing ties it to the target, and the summary then printed it in the
+lower sections as another process's. The one part of the report whose job is to
+separate the sample's traffic from its neighbours' was giving a confident wrong
+answer in exactly the case where it mattered most.
+
+The kernel does not have this blind spot. Every socket in `/proc/net/tcp` carries
+the UID that owns it, and Android gives each package its own. Each device run now
+polls that table for the target's UID and writes `uid_sockets.json`. The result
+feeds the report twice: those destinations count as the target's when marking DNS,
+SNI and HTTP entries, and any of them the tracer never saw are listed under
+**Traffic the tracer never saw** — the target's connections, honestly labelled as
+un-attributable rather than misfiled.
+
+This narrows the gap; it does not close it. Polling samples every two seconds, so
+a connection opened and closed in between is missed by both views, and the check
+can name a blind spot but never attribute one. Run status carries the count either
+way, including `0 unseen`, so agreement is stated rather than assumed.
+
+
 ## 2.2.2
 
 ### Added — `docs/USAGE.md`

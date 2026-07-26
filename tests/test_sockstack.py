@@ -3,6 +3,7 @@ Unit tests for sockstack's pure logic — no device, no Frida, no friTap.
 
     python3 -m unittest discover -s tests -v
 """
+import datetime
 import json
 import os
 import sys
@@ -496,3 +497,104 @@ class DeviceArch(unittest.TestCase):
 
     def test_a_silent_device_is_reported_as_unknown(self):
         self.assertEqual(self.arch_for(''), ('unknown', '<arch>'))
+
+
+PROC_NET_TCP = """\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:69A2 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 159278 1 0000000000000000 100 0 0 10 0
+   1: 1002000A:EA5A 779AFB8E:01BB 08 00000000:00000000 00:00000000 00000000 10132        0 150158 1 0000000000000000 70 4 22 10 -1
+"""
+
+# Real rows from /proc/net/tcp6 on an Android 14 emulator: an unbound listener,
+# and a connection whose address is IPv4-mapped.
+PROC_NET_TCP6 = """\
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000000000000:B281 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 167169 1 0000000000000000 100 0 0 10 0
+   1: 0000000000000000FFFF00001002000A:A97C 0000000000000000FFFF0000BC944BAD:01BB 01 00000000:00000000 00:00000000 00000000 10131        0 122249 1 0000000000000000 100 0 0 10 0
+"""
+
+
+class ProcNetParsing(unittest.TestCase):
+    """The kernel's socket table is the only view of the target's traffic that
+    does not depend on the tracer having hooked the call. Misreading it would
+    turn that safety net into a source of invented destinations."""
+
+    def test_ipv4_address_is_little_endian_and_the_port_is_not(self):
+        self.assertEqual(sockstack.decode_proc_addr('779AFB8E:01BB'),
+                         ('142.251.154.119', 443))
+
+    def test_ipv4_mapped_ipv6_is_reported_as_ipv4(self):
+        # Both tables must spell one address the same way, or the same host
+        # looks like two and the cross-check reports a phantom miss.
+        self.assertEqual(
+            sockstack.decode_proc_addr('0000000000000000FFFF0000BC944BAD:01BB'),
+            ('173.75.148.188', 443))
+
+    def test_a_malformed_address_raises_rather_than_guesses(self):
+        with self.assertRaises(ValueError):
+            sockstack.decode_proc_addr('nonsense')
+
+    def test_only_rows_owned_by_the_target_uid_are_kept(self):
+        self.assertEqual(sockstack.parse_proc_net(PROC_NET_TCP, 10132),
+                         {('142.251.154.119', 443)})
+        self.assertEqual(sockstack.parse_proc_net(PROC_NET_TCP, 10133), set())
+
+    def test_listening_sockets_are_not_destinations(self):
+        # Row 0 is owned by uid 0 with remote port 0; a listener is not somewhere
+        # the target went.
+        self.assertEqual(sockstack.parse_proc_net(PROC_NET_TCP, 0), set())
+
+    def test_ipv6_table_is_parsed_with_the_same_uid_rule(self):
+        self.assertEqual(sockstack.parse_proc_net(PROC_NET_TCP6, 10131),
+                         {('173.75.148.188', 443)})
+
+    def test_a_truncated_row_is_skipped_not_fatal(self):
+        self.assertEqual(sockstack.parse_proc_net('garbage\n1: 2: 3:\n', 10132), set())
+
+    def test_no_input(self):
+        self.assertEqual(sockstack.parse_proc_net('', 10132), set())
+
+
+STAMP = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+
+
+class KernelCrossCheck(unittest.TestCase):
+    """A target whose networking bypasses libc leaves the tracer with nothing,
+    and its traffic then looks exactly like another app's. The kernel's socket
+    table is what tells the two apart — and saying so is the whole point, so the
+    summary has to surface it rather than quietly widen the target set."""
+
+    def summarize(self, uid_peers, tracer_ip='198.51.100.5'):
+        out = tempfile.mkdtemp()
+        with open(os.path.join(out, 'socket_trace.json'), 'w') as fh:
+            json.dump([{'peer_ip': tracer_ip, 'peer_port': 443,
+                        'socket_event_type': 'connect', 'stack_source': 'java',
+                        'stack': [frame('com.example.A.go(A.java:1)')]}], fh)
+        with open(os.path.join(out, 'uid_sockets.json'), 'w') as fh:
+            json.dump({'uid': 10192,
+                       'peers': [{'ip': ip, 'port': port} for ip, port in uid_peers]}, fh)
+        sockstack.decrypt_and_summarize(out, 'com.example.app', stamp=STAMP)
+        with open(os.path.join(out, 'summary_20260101T000000Z.md')) as fh:
+            return fh.read()
+
+    def test_a_destination_the_tracer_missed_is_reported_as_the_targets(self):
+        report = self.summarize([('203.0.113.9', 8443)])
+        self.assertIn('Traffic the tracer never saw', report)
+        self.assertIn('203.0.113.9:8443', report)
+        self.assertIn('1 unseen by the tracer', report)
+
+    def test_agreement_produces_no_alarm(self):
+        # The tracer already saw this one: a cross-check that cries wolf on every
+        # well-behaved app would be ignored by the time it mattered.
+        report = self.summarize([('198.51.100.5', 443)])
+        self.assertNotIn('Traffic the tracer never saw', report)
+        self.assertIn('0 unseen by the tracer', report)
+
+    def test_without_the_cross_check_the_line_is_absent_entirely(self):
+        out = tempfile.mkdtemp()
+        with open(os.path.join(out, 'socket_trace.json'), 'w') as fh:
+            json.dump([], fh)
+        sockstack.decrypt_and_summarize(out, 'com.example.app', stamp=STAMP)
+        with open(os.path.join(out, 'summary_20260101T000000Z.md')) as fh:
+            report = fh.read()
+        self.assertNotIn('Kernel cross-check', report)
