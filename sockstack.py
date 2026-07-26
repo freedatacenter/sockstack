@@ -1056,10 +1056,12 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
     lines += ['', '---', '',
               '_Everything above comes from the tracer and describes the target '
               'process only. Everything below is read from the packet capture, which '
-              'is device-wide. Each entry is marked **target** when its address is one '
-              'the tracer saw the target contact, and "other process" when it is not — '
-              'an unmarked host was resolved or contacted by something else on the '
-              'device, not by the app under analysis._', '']
+              'is device-wide. An entry is marked **target** when its address is one '
+              'the tracer saw the target contact. Unmarked means only that the tracer '
+              'did not see it — usually another process on the device, but the tracer '
+              'observes just what passes through libc, so a target issuing raw '
+              'syscalls (a Go runtime, a statically linked payload) lands here too. '
+              'Read unmarked as "not attributed", never as "proven unrelated"._', '']
     lines += ['', '## DNS queries', '']
     lines += [f'- `{n}` — {c}{mark(n in dns_target)}'
               for n, c in dns.most_common()] or ['- (none)']
