@@ -126,7 +126,39 @@ it on demand, and restarts it if a previous session left it wedged.
 
 ---
 
-## Step 4 — install the target and find out what it is called
+## Step 4 — identify the target, then install it
+
+Step 5 needs the target's **package name**. Get it first: the filename tells you
+nothing, and a plausible guess simply fails.
+
+### Why you cannot guess it
+
+One sample from a current campaign, as three different strings:
+
+| | |
+|---|---|
+| file name | `Gov-Services.apk` |
+| package name | `com.k4m2p9.zx7qwd` |
+| app label on screen | `Gov Services_v14.2` |
+
+The file name is whoever saved it; the package name is the identity Android
+uses; the label is what the victim sees. They are chosen independently, and
+malware has every reason to make the first and third look legitimate while the
+second is machine-generated noise.
+
+### Ask the file — preferred, and needs no device
+
+With Android build-tools present:
+
+```bash
+aapt dump badging target.apk | awk -F"'" '/^package/{print $2}'
+```
+
+Knowing the name before the APK touches the device is worth a little effort: you
+can confirm what you are about to install, and you have the name ready if the
+app crashes on launch or uninstalls itself.
+
+### Install
 
 ```bash
 adb -s emulator-5554 install -r target.apk
@@ -136,34 +168,10 @@ Leave it un-launched. The next step spawns it, so that hooks are in place before
 its first instruction — including whatever it does in `Application.onCreate`,
 which is where a lot of interesting behaviour lives.
 
-### The three names
+### Ask the device — if you have no build-tools
 
-The next step needs a **package name**, and the file you just installed does not
-have to be called anything like it. A real sample from a recent campaign:
-
-| | |
-|---|---|
-| file name | `Gov-Services.apk` |
-| package name | `com.k4m2p9.zx7qwd` |
-| app label on screen | `Gov Services_v14.2` |
-
-Three different strings for one app, and each is used somewhere different. The
-file name is whoever saved it; the package name is the identity Android uses;
-the label is what the user sees. Malware picks them independently, and a
-plausible-looking guess will simply fail.
-
-### Getting the package name
-
-If you have Android build-tools, ask the file directly — this works before
-installing anything:
-
-```bash
-aapt dump badging target.apk | awk -F"'" '/^package/{print $2}'
-```
-
-If you do not, ask the device. Third-party packages sorted by install time put
-the one you just installed last, so this needs no snapshot taken beforehand and
-no extra tooling:
+Third-party packages sorted by install time put the one you just installed last.
+No snapshot taken beforehand, no extra tooling:
 
 ```bash
 for p in $(adb -s emulator-5554 shell pm list packages -3 | sed 's/package://' | tr -d '\r'); do
