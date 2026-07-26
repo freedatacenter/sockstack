@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+# never commit capture output — it holds TLS secrets and decrypted traffic
+run/
+out/
+selftest/
+*.pcap
+*.pcapng
+sslkeylog.txt
+socket_trace.json
+socket_trace.jsonl
+socket_trace_counts.json
+socket_trace_meta.json
+run_manifest.json
+summary_*.md
+decrypted_bodies_*.txt
+*.apk
+frida-server*
+agent/node_modules/
+
+# working material, never part of a release
+замечания/
+code_review*.md

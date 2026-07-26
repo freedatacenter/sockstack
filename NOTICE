@@ -1,0 +1,97 @@
+droidtrace
+Copyright (C) 2026 Free Data Center
+
+This program is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later version.
+See the LICENSE file for the full text.
+
+===============================================================================
+Third-party components
+===============================================================================
+
+-------------------------------------------------------------------------------
+1. agent/src/index.js — derivative work
+-------------------------------------------------------------------------------
+
+    PiRogue Tool Suite / pirogue-cli
+    Copyright (C) Defensive Lab Agency
+    https://github.com/PiRogueToolSuite/pirogue-cli
+    Licensed under the GNU Affero General Public License v3.0
+
+The idea of attributing socket operations to the Java stack that produced them,
+and the original implementation of it (log_socket_operations.js), come from the
+PiRogue Tool Suite. agent/src/index.js is a substantially rewritten derivative of
+that file and remains under AGPL-3.0, as does the compiled agent built from it
+(scripts/frida/socket_trace.bundle.js). The file header records what was changed
+and why. Credit for the original approach belongs to the PiRogue Tool Suite
+authors.
+
+-------------------------------------------------------------------------------
+2. The compiled agent — bundled third-party code
+-------------------------------------------------------------------------------
+
+scripts/frida/socket_trace.bundle.js is a build artifact produced by
+frida-compile from agent/src/. It is not only our code: the build inlines its
+dependencies, so the file shipped in this repository CONTAINS the packages below
+and redistributes them.
+
+    frida-java-bridge
+    Copyright (C) Ole André Vadla Ravnås and contributors
+    https://github.com/frida/frida-java-bridge
+    Licensed under LGPL-2.0 WITH WxWindows-exception-3.1
+
+    buffer            (C) Feross Aboukhadijeh and contributors — MIT
+    base64-js         (C) Jameson Little — MIT
+    ieee754           (C) Feross Aboukhadijeh and contributors — BSD-3-Clause
+    https://github.com/feross/buffer, /beatgammit/base64-js, /feross/ieee754
+
+frida-java-bridge supplies the Java runtime bridge. Frida 17 removed the built-in
+`Java` global, so without this package there is no call-stack attribution at all;
+it is a functional necessity, not a convenience. The wxWindows exception to
+LGPL-2.0 permits distributing a combined work under the combined work's own terms
+— here AGPL-3.0 — while the bridge's own portions remain under its licence, and
+this notice is part of satisfying that. The MIT and BSD-3-Clause components are
+redistributed with the attributions above.
+
+To rebuild the artifact from source and confirm it contains nothing else:
+
+    cd agent && npm ci && npm run build
+
+The build is byte-for-byte reproducible; tests/test_bundle_fresh.py verifies that
+the shipped bundle matches agent/src/.
+
+-------------------------------------------------------------------------------
+3. friTap — runtime dependency, not redistributed
+-------------------------------------------------------------------------------
+
+    friTap
+    Copyright (C) Fraunhofer FKIE
+    https://github.com/fkie-cad/friTap
+    Licensed under the GNU General Public License v3.0
+
+friTap performs the TLS interception, certificate-pinning bypass, root evasion
+and device handling. It is installed from PyPI as a dependency (see
+requirements.txt); no part of it is copied into this repository. droidtrace uses
+its public plugin API. AGPL-3.0 and GPL-3.0 permit this combination; the work as
+a whole is distributed under AGPL-3.0.
+
+-------------------------------------------------------------------------------
+Removed before release
+-------------------------------------------------------------------------------
+
+Earlier, unpublished revisions of this repository vendored four further Frida
+scripts (log_ssl_keys.js, no_root.js, log_aes_info.js, log_ad_ids.js) and
+attributed all of them to the PiRogue Tool Suite under AGPL-3.0. That attribution
+was wrong: log_ssl_keys.js originates from MIT-licensed work by other authors,
+no_root.js from the fridantiroot project with no licence grant accompanying the
+copy, and the provenance of log_aes_info.js was never established. Rather than
+restate the attribution, those files were removed — friTap covers their function —
+so nothing here is redistributed without a clear licence basis. This is recorded
+deliberately: the error was caught before publication, and anyone auditing the
+project should be able to see how it was resolved.
+
+===============================================================================
+
+droidtrace is an independent project and is not affiliated with or endorsed by
+the Defensive Lab Agency or Fraunhofer FKIE.

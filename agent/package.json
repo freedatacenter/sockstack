@@ -1,0 +1,19 @@
+{
+  "name": "droidtrace-agent",
+  "version": "2.2.1",
+  "private": true,
+  "description": "Frida agent for droidtrace: socket operations with Java call-stack attribution",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "frida-compile src/index.js -o ../scripts/frida/socket_trace.bundle.js",
+    "watch": "frida-compile src/index.js -o ../scripts/frida/socket_trace.bundle.js -w"
+  },
+  "devDependencies": {
+    "@types/frida-gum": "^19.0.0",
+    "frida-compile": "^19.0.5"
+  },
+  "dependencies": {
+    "frida-java-bridge": "^7.0.0"
+  }
+}
