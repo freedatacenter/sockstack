@@ -2,12 +2,18 @@
 
 **Which code path sent this?**
 
-[friTap](https://github.com/fkie-cad/friTap) already answers *what* an Android app
-sends: it hooks the TLS libraries, writes an NSS keylog and defeats certificate
-pinning without installing a CA. It does not tell you *which part of the app* did
-it. sockstack adds that, as a friTap plugin: every socket operation is recorded
-together with the Java stack that produced it, so a decrypted request can be traced
-back to the class and method that sent it.
+A command-line tool for dynamic analysis of Android network traffic. It records,
+for every socket operation, the Java call stack that produced it — so a decrypted
+request can be traced back to the class and method that sent it. It is written
+for mobile malware analysis and DFIR work against a live device.
+
+It is built on [friTap](https://github.com/fkie-cad/friTap), which already answers
+*what* an app sends: friTap hooks the TLS libraries, writes an NSS keylog and
+defeats certificate pinning without installing a CA. What it does not say is
+*which part of the app* did it. sockstack adds that, through friTap's plugin API
+rather than by forking it — and you never have to drive friTap yourself. Run
+sockstack; it starts friTap, the capture on the device and the decryption
+afterwards.
 
 ```
 ## Call-stack attribution

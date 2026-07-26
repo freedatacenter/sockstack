@@ -1227,8 +1227,9 @@ def prepare_output(out_dir):
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
-        description='Java call-stack attribution for Android network traffic, '
-                    'as a friTap plugin.')
+        description='Dynamic analysis of Android network traffic: which code '
+                    'path opened each socket. Built on friTap, which it starts '
+                    'for you.')
     ap.add_argument('--device', help='adb/Frida device id, e.g. emulator-5554 '
                                      '(required unless --host or --postprocess-only)')
     ap.add_argument('--package', help='target app package name (or a local command with --host)')
