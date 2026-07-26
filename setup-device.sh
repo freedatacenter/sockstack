@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # setup-device.sh — provision a rooted Android device (emulator or physical phone
-# with Magisk) for droidtrace: push frida-server and, if missing, a static tcpdump.
+# with Magisk) for sockstack: push frida-server and, if missing, a static tcpdump.
 #
 # Usage:
 #   ./setup-device.sh <device-id> [frida-server-binary] [tcpdump-binary]
@@ -93,10 +93,10 @@ if [ -n "$FRIDA_BIN" ]; then
     fi
 elif SU "test -x '$FRIDA_DST'"; then
     echo "[i] no frida-server binary given — one is already on the device"
-    echo "    (droidtrace starts it on demand; pass a binary as arg 2 to replace it)"
+    echo "    (sockstack starts it on demand; pass a binary as arg 2 to replace it)"
 else
     echo "[!] no frida-server on the device and none given as arg 2." >&2
-    echo "    droidtrace cannot hook anything without it. Download a matching" >&2
+    echo "    sockstack cannot hook anything without it. Download a matching" >&2
     echo "    frida-server 17.x for ABI '${ABI:-unknown}' and re-run:" >&2
     echo "      ./setup-device.sh $SERIAL ./frida-server-17.x.y-android-${FRIDA_ARCH}" >&2
     exit 1

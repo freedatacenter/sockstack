@@ -66,7 +66,7 @@ export function parseSockaddr(addr, isDarwin = IS_DARWIN) {
 }
 
 /* Frames that are identical for every caller and so cannot tell two call sites
- * apart. Kept deliberately in step with FRAMEWORK_PREFIXES in droidtrace.py —
+ * apart. Kept deliberately in step with FRAMEWORK_PREFIXES in sockstack.py —
  * change one, change the other. Networking libraries (okhttp, Cronet…) are NOT
  * listed: their frames differ per call site, so they carry signal here even
  * though the report does not treat them as application code. */

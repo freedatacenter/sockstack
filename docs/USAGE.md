@@ -11,7 +11,7 @@ what to do in what order, and how to tell a good run from a bad one.
 
 ## Step 0 — decide whether this tool answers your question
 
-droidtrace records, for each socket operation, the Java call stack that produced
+sockstack records, for each socket operation, the Java call stack that produced
 it. It is at its best on code that opens sockets from its own threads —
 hand-written network layers, which is what most Android malware has.
 
@@ -48,7 +48,7 @@ the plugin loads, that libc hooks install, and that the summary is written —
 without a device, an emulator or an APK in the picture.
 
 ```bash
-python3 droidtrace.py --host \
+python3 sockstack.py --host \
     --package "/usr/bin/curl -s https://example.com" \
     --output ./selftest --duration 30
 ```
@@ -56,7 +56,7 @@ python3 droidtrace.py --host \
 What a healthy run says:
 
 ```
-[*] Plugin droidtrace-socket-trace: script loaded (order=after)
+[*] Plugin sockstack-socket-trace: script loaded (order=after)
 [+] socket tracer active on libc.so.6: __read_chk, close, connect, dup2, dup3,
     read, recv, recvfrom, recvmsg, send, sendmsg, sendto, write
 [!] not hooked (absent from this libc): __write_chk
@@ -121,7 +121,7 @@ The reboot is for a persist property the script sets (`persist.traced.enable=0`)
 which works around a perfetto crash that kills target processes at launch on some
 Android 14 images.
 
-You do not have to start frida-server yourself on later runs: droidtrace launches
+You do not have to start frida-server yourself on later runs: sockstack launches
 it on demand, and restarts it if a previous session left it wedged.
 
 ---
@@ -204,7 +204,7 @@ string instead of guessing.
 `--package` is the package name from Step 4, not the filename you installed:
 
 ```bash
-python3 droidtrace.py --device emulator-5554 \
+python3 sockstack.py --device emulator-5554 \
     --package com.k4m2p9.zx7qwd --output ./run --duration 200
 ```
 
@@ -334,7 +334,7 @@ attributing a C2 to your sample and attributing your neighbour's traffic to it.
 A capture is expensive and unrepeatable; analysis is neither.
 
 ```bash
-python3 droidtrace.py --postprocess-only --output ./run
+python3 sockstack.py --postprocess-only --output ./run
 ```
 
 The report keeps the **same filename**, because its timestamp comes from

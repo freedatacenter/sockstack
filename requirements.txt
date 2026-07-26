@@ -1,5 +1,5 @@
 # friTap provides TLS interception, pinning bypass and device handling;
-# droidtrace adds the call-stack attribution plugin on top of it.
+# sockstack adds the call-stack attribution plugin on top of it.
 #
 # Both bounds are deliberate. friTap 2.x is the series carrying the ScriptPlugin
 # API this tool is built on, and it requires Frida 17.x specifically — Frida 16

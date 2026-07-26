@@ -17,11 +17,11 @@ It is a bundle rather than a plain script because Frida 17 removed the built-in
 `Java` global; `frida-java-bridge` has to be compiled in, or call-stack
 attribution silently disappears (see `../../docs/GOTCHAS.md`).
 
-Everything else droidtrace needs — TLS keylogging, pinning bypass, root evasion,
+Everything else sockstack needs — TLS keylogging, pinning bypass, root evasion,
 spawn/attach — comes from [friTap](https://github.com/fkie-cad/friTap) and is not
 duplicated here.
 
-The agent is loaded by droidtrace as a friTap `ScriptPlugin` and speaks over
+The agent is loaded by sockstack as a friTap `ScriptPlugin` and speaks over
 `send()`:
 
 | message | meaning |

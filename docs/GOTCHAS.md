@@ -34,7 +34,7 @@ The bridge fix above is only half the job. Once the agent knows *why* a record
 has no stack, the reporting layer has to say so, and it is very easy for that
 knowledge to die on the way out.
 
-droidtrace shipped exactly that bug. The agent set `stack_source` correctly; the
+sockstack shipped exactly that bug. The agent set `stack_source` correctly; the
 summary ignored it and decided from the frames alone:
 
 ```python
@@ -93,7 +93,7 @@ It does not bite every target — a malware sample with no launcher entry and no
 label showed up under its package name — which is exactly why it is confusing
 when it does.
 
-droidtrace prints the candidates on this error rather than leaving you to guess:
+sockstack prints the candidates on this error rather than leaving you to guess:
 
 ```
 [!] friTap failed to start: BackendProcessNotFoundError: unable to find process ...
@@ -119,7 +119,7 @@ was wrong: it reproduces just as reliably on **spawn**, on a freshly built
 x86_64 Android 14 emulator, against an ordinary app. Two different modes, two
 architectures, two machines.
 
-droidtrace therefore leaves root evasion **off by default** and `--anti-root`
+sockstack therefore leaves root evasion **off by default** and `--anti-root`
 turns it on. A default that reliably prevents the tool from starting is not a
 useful default, and attaching to an already-running app never needed it anyway:
 whatever root checks the app performs, it has already performed. A sample that
@@ -183,7 +183,7 @@ and the two deadlock; on other paths it can terminate the process outright. Eith
 way, anything your code does *after* `stop()` may never run.
 
 Write your artifacts first, stop afterwards, and run the stop on a thread with a
-timeout. droidtrace also appends every record to a `.jsonl` as it arrives, so even
+timeout. sockstack also appends every record to a `.jsonl` as it arrives, so even
 a hard kill leaves the collected data on disk.
 
 ## `is_running` does not mean the target is alive
@@ -192,7 +192,7 @@ a hard kill leaves the collected data on disk.
 target that exited seconds ago still reports `True`, so a collection loop that
 trusts it will sit out the entire `--duration` and then hit the stop hang above.
 
-Use a signal that comes from inside the target instead. droidtrace's tracer emits a
+Use a signal that comes from inside the target instead. sockstack's tracer emits a
 counts message on a timer; when the beats stop, the process is gone.
 
 ## What the instrumentation actually costs
@@ -261,7 +261,7 @@ answer, which for an investigation is worse than no answer.
 
 friTap's `--full_capture` opens a raw socket. Without the privileges for it you get
 a `PermissionError` in the log, the capture thread dies, **and the pcap file is
-never created** while the run otherwise looks successful. droidtrace does not use
+never created** while the run otherwise looks successful. sockstack does not use
 it: the raw capture is a plain `tcpdump` on the device and the keys are injected
 afterwards with `editcap --inject-secrets`.
 
@@ -313,7 +313,7 @@ The file starts with `tcpdump: data link type LINUX_SLL2` and then fails with
 - **Emulator / userdebug:** `adb root`, and the shell is already root.
 - **Physical phone (Magisk):** root only through `su -c`.
 
-droidtrace detects which and wraps privileged commands accordingly. On a stock
+sockstack detects which and wraps privileged commands accordingly. On a stock
 phone you must also push a static `tcpdump` and a `frida-server` built for the
 phone's ABI — `setup-device.sh` prints the device ABI, and a mismatch there is the
 most common reason frida-server appears to start and then does nothing.
@@ -322,7 +322,7 @@ most common reason frida-server appears to start and then does nothing.
 
 Frida spawn-gating is not reliable for every app. Some samples fail to launch under
 spawn in one run out of two and degrade further with each attempt — and this hits
-friTap's own CLI just as hard, so it is not a droidtrace bug and there is nothing
+friTap's own CLI just as hard, so it is not a sockstack bug and there is nothing
 to fix in your setup. Chasing it while also debugging your own plumbing wastes
 hours and teaches you nothing.
 

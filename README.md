@@ -1,11 +1,11 @@
-# droidtrace
+# sockstack
 
 **Which code path sent this?**
 
 [friTap](https://github.com/fkie-cad/friTap) already answers *what* an Android app
 sends: it hooks the TLS libraries, writes an NSS keylog and defeats certificate
 pinning without installing a CA. It does not tell you *which part of the app* did
-it. droidtrace adds that, as a friTap plugin: every socket operation is recorded
+it. sockstack adds that, as a friTap plugin: every socket operation is recorded
 together with the Java stack that produced it, so a decrypted request can be traced
 back to the class and method that sent it.
 
@@ -40,9 +40,9 @@ needed to get a decrypted capture out the other end.
 | | |
 |---|---|
 | **friTap** | TLS keylog, pinning bypass, root evasion, spawn/attach, device handling |
-| **droidtrace** | the socket-tracer plugin, packet capture, decryption, summary |
+| **sockstack** | the socket-tracer plugin, packet capture, decryption, summary |
 
-droidtrace does not reimplement any part of friTap and does not vendor it — it is
+sockstack does not reimplement any part of friTap and does not vendor it — it is
 a dependency, used through its public plugin API.
 
 ## What you get per run
@@ -90,7 +90,7 @@ read the report section by section — see [**docs/USAGE.md**](docs/USAGE.md).
 
 ```bash
 # 0. Check the toolchain without a device at all — runs against a local process
-python3 droidtrace.py --host --package "/usr/bin/curl -s https://example.com" \
+python3 sockstack.py --host --package "/usr/bin/curl -s https://example.com" \
     --output ./selftest --duration 30
 
 # 1. Provision the device (frida-server 17.x, and tcpdump if it is a stock phone)
@@ -100,7 +100,7 @@ python3 droidtrace.py --host --package "/usr/bin/curl -s https://example.com" \
 ./setup-device.sh emulator-5554 ./frida-server-17.2.0-android-arm64
 adb -s emulator-5554 reboot        # the perfetto workaround is a persist prop
 
-#    You do not have to start frida-server yourself: droidtrace launches it,
+#    You do not have to start frida-server yourself: sockstack launches it,
 #    and restarts it if a previous session left it wedged. Provisioning only
 #    has to put a working binary on the device.
 
@@ -114,7 +114,7 @@ aapt dump badging target.apk | awk -F"'" '/^package/{print $2}'   # build-tools
 adb -s emulator-5554 shell pm list packages -3                    # or diff this
 
 # 3. Run — spawns the app and hooks it from the start
-python3 droidtrace.py --device emulator-5554 \
+python3 sockstack.py --device emulator-5554 \
     --package com.example.app --output ./run --duration 200
 
 #    For a sample with no launcher activity — most RATs — spawning gets you a
@@ -130,7 +130,7 @@ adb -s emulator-5554 shell input tap 540 1800
 Re-generate the decryption and summary from artifacts you already have:
 
 ```bash
-python3 droidtrace.py --postprocess-only --output ./run
+python3 sockstack.py --postprocess-only --output ./run
 ```
 
 Reports are named after the run they describe (`summary_20260725T215003Z.md`), and
@@ -201,7 +201,7 @@ Read these before trusting an empty result.
 Be precise about this, because it is a forensic tool.
 
 **Verified end to end on a device with this exact build (2.2.0).** On a headless
-Android 14 x86_64 emulator, one `droidtrace.py` invocation against F-Droid — an
+Android 14 x86_64 emulator, one `sockstack.py` invocation against F-Droid — an
 ordinary OkHttp app — spawned the target, captured with on-device `tcpdump`,
 collected the TLS secrets, injected them with `editcap`, extracted decrypted
 bodies, and recorded 17 socket operations with `java=16, not-walked=1`. It
@@ -333,7 +333,7 @@ Everything that cost real debugging time is in [`docs/GOTCHAS.md`](docs/GOTCHAS.
 A run directory holds TLS session secrets and decrypted traffic. It can expose
 credentials, tokens and personal data — including data belonging to people who are
 not the subject of your analysis — and may contain material you are not entitled to
-redistribute. droidtrace creates the directory `0700` and `.gitignore` keeps it out
+redistribute. sockstack creates the directory `0700` and `.gitignore` keeps it out
 of the repository; the rest is on you.
 
 ## Licence

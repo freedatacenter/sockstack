@@ -1,4 +1,4 @@
-droidtrace
+sockstack
 Copyright (C) 2026 Free Data Center
 
 This program is free software: you can redistribute it and/or modify it under the
@@ -72,7 +72,7 @@ the shipped bundle matches agent/src/.
 
 friTap performs the TLS interception, certificate-pinning bypass, root evasion
 and device handling. It is installed from PyPI as a dependency (see
-requirements.txt); no part of it is copied into this repository. droidtrace uses
+requirements.txt); no part of it is copied into this repository. sockstack uses
 its public plugin API. AGPL-3.0 and GPL-3.0 permit this combination; the work as
 a whole is distributed under AGPL-3.0.
 
@@ -93,5 +93,5 @@ project should be able to see how it was resolved.
 
 ===============================================================================
 
-droidtrace is an independent project and is not affiliated with or endorsed by
+sockstack is an independent project and is not affiliated with or endorsed by
 the Defensive Lab Agency or Fraunhofer FKIE.

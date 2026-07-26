@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-droidtrace — Java call-stack attribution for Android network traffic.
+sockstack — Java call-stack attribution for Android network traffic.
 
 friTap (https://github.com/fkie-cad/friTap) already solves TLS interception:
 it hooks the crypto libraries, writes an NSS keylog, and defeats certificate
 pinning without installing a CA. What it does not tell you is *which code path*
-opened a connection. droidtrace adds exactly that, as a friTap ScriptPlugin:
+opened a connection. sockstack adds exactly that, as a friTap ScriptPlugin:
 every socket operation is recorded with the Java stack that produced it, so a
 decrypted request can be traced back to the class and method that sent it.
 
 Layers, so it is clear what belongs to whom:
 
     friTap      TLS keylog, pinning bypass, anti-root, spawn/attach, device I/O
-    droidtrace  the socket tracer plugin, packet capture, decryption, summary
+    sockstack  the socket tracer plugin, packet capture, decryption, summary
 
 Two design points that exist because of how targets actually behave:
 
@@ -26,7 +26,7 @@ Two design points that exist because of how targets actually behave:
     produces a useful summary rather than an empty one.
 
 Example:
-    python3 droidtrace.py --device emulator-5554 \\
+    python3 sockstack.py --device emulator-5554 \\
         --package com.example.app --output ./run --duration 200
 
 Requires Frida 17.x and friTap 2.x. Licensed AGPL-3.0; see NOTICE for the
@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 
 __version__ = '2.2.2'
 
-DEV_PCAP = '/data/local/tmp/droidtrace_capture.pcap'
+DEV_PCAP = '/data/local/tmp/sockstack_capture.pcap'
 FRIDA_SERVER = '/data/local/tmp/frida-server'
 # Android ABI -> the architecture name in Frida's release filenames.
 FRIDA_ARCH = {'arm64-v8a': 'arm64', 'armeabi-v7a': 'arm', 'armeabi': 'arm',
@@ -137,7 +137,7 @@ _CAPTURE = {}
 
 
 def run_artifacts(out_dir):
-    """Every file in out_dir that belongs to a droidtrace run."""
+    """Every file in out_dir that belongs to a sockstack run."""
     names = [n for n in RUN_ARTIFACTS if os.path.exists(os.path.join(out_dir, n))]
     for pattern in RUN_ARTIFACT_GLOBS:
         names += sorted(os.path.basename(p)
@@ -243,7 +243,7 @@ def build_plugin(script_path, jsonl_path=None):
 
         @property
         def name(self):
-            return 'droidtrace-socket-trace'
+            return 'sockstack-socket-trace'
 
         @property
         def version(self):
@@ -966,7 +966,7 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
     manifest = _load_json(os.path.join(out_dir, 'run_manifest.json'), {})
     recorded = manifest.get('target')
     heading = target if target_is_recorded else (recorded or target)
-    lines = [f'# droidtrace run: {heading}', '',
+    lines = [f'# sockstack run: {heading}', '',
              f'Report generated: {datetime.now(timezone.utc).isoformat(timespec="seconds")}',
              '', f'Artifacts: `{out_dir}`', '']
     if not target_is_recorded:
@@ -1152,7 +1152,7 @@ def write_manifest(out_dir, args, plugin, started, ended, stop_clean):
     def digest(name):
         return file_digest(os.path.join(out_dir, name))
 
-    versions = {'droidtrace': __version__}
+    versions = {'sockstack': __version__}
     for mod in ('frida', 'friTap'):
         try:
             versions[mod] = getattr(__import__(mod), '__version__', 'unknown')
@@ -1160,7 +1160,7 @@ def write_manifest(out_dir, args, plugin, started, ended, stop_clean):
             versions[mod] = 'not installed'
 
     manifest = {
-        'droidtrace_version': __version__,
+        'sockstack_version': __version__,
         'started_utc': started.isoformat(),
         'ended_utc': ended.isoformat(),
         'target': args.package,
