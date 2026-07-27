@@ -57,10 +57,13 @@ achieve. Both found by leaving the residue on purpose and starting again.
 
 Verified on the device: tracefs discovery under SELinux **enforcing**, the uid →
 `ps` → `set_event_pid` path, and teardown — the instance removed, the tracepoint
-switched off, no reader left running. Not verified: a real app's traffic. Nothing
-installed on the stand made a new TCP connection during a run — a fact the
-unfiltered capture confirmed rather than assumed — so the chain has been proven
-end to end for a process, not yet for an app.
+switched off, no reader left running.
+
+And finally against a real app rather than a generator: a 30-second run on an
+Android 14 emulator, `--ftrace` beside the usual poll. 27 tracer records, 13
+connection events, and **5 of the 10 destinations were seen only by the event
+stream** — among them all three addresses the app's own API resolves to. The
+poll had 15 chances to look and still missed half the run.
 
 ### Added — an optional web front-end (`ui/`)
 

@@ -300,9 +300,10 @@ Read these before trusting an empty result.
   destinations still come from polling alone and this source's silence about
   them means nothing. The summary names how many destinations the poll missed.
 
-  How large is the gap? Measured on the Android 14 emulator — eight
-  destinations, one 0.3-second connection each, from an ordinary uid — the
-  stream saw 8, the poll saw 1. Polling looks far better than that against
+  How large is the gap? Measured twice on an Android 14 emulator. With eight
+  destinations and one 0.3-second connection each, the stream saw 8 and the poll
+  saw 1. On a real app over 30 seconds, 5 of 10 destinations were seen only by
+  the stream. Polling looks far better than that against
   root-owned traffic, but only because a closed socket is orphaned to uid 0 and
   lingers in `/proc/net`; an app's uid has no such afterglow.
   What it does not do is attribute: the kernel knows pid, comm and uid, never
