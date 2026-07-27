@@ -47,6 +47,14 @@ documentation:
   collected, and the earlier caveat about borrowing another process's handshake
   is gone with it.
 
+Cleared before merging: a run killed hard leaves its reader alive on the device
+with the instance still enabled, and `trace_pipe` is a consuming read — two
+readers each get a share of the events and neither sees all of them. That is the
+worst failure this source could have, since it looks like a healthy run that
+quietly lost half its evidence. Startup now evicts whatever the last run left,
+and teardown retries the removal instead of reporting a success it did not
+achieve. Both found by leaving the residue on purpose and starting again.
+
 Verified on the device: tracefs discovery under SELinux **enforcing**, the uid →
 `ps` → `set_event_pid` path, and teardown — the instance removed, the tracepoint
 switched off, no reader left running. Not verified: a real app's traffic. Nothing

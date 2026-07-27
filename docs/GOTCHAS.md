@@ -370,6 +370,27 @@ long after the process is gone, and a check filtering on uid 0 keeps finding it.
 An app's uid has no such afterglow. Measure a sampling check against a real app's
 uid, or the number it gives you is its own.
 
+## `pkill -f` kills the shell that names it
+
+```bash
+pkill -f "ui/server.py"          # also matches the ssh command line running it
+```
+
+`-f` matches whole command lines, and the command line of the shell running the
+pkill contains the pattern. It therefore kills itself — and everything later in
+that line. This bit three times in one day: an ssh session that died with exit
+255, a panel restart that never restarted, and a `rmdir` that never ran because
+the pkill before it took the shell down.
+
+Bracket the first character. `[u]i/server.py` is a regex that still matches
+`ui/server.py` in the target's command line, and no longer matches the literal
+`[u]i/server.py` sitting in its own.
+
+Watch for the subtler form: the bracket protects against the *pattern* appearing
+in your command line, not against the *target string* appearing there for another
+reason — a compound command that both launches and greps for the same path
+matches itself regardless.
+
 ## `adb connect` exits 0 when it fails
 
 ```

@@ -741,6 +741,17 @@ def parse_ftrace_socket_event(line):
             'pid': int(match.group('pid')), 'comm': match.group('comm').strip()}
 
 
+def self_immune_pattern(text):
+    """A `pkill -f` pattern that cannot match the command line naming it.
+
+    `pkill -f` matches whole command lines, and the shell running the pkill has
+    the pattern in its own. So the obvious form kills its own shell — and every
+    command after it in that line. Bracketing the first character leaves a regex
+    that still matches the target and no longer matches itself.
+    """
+    return f'[{text[0]}]{text[1:]}' if text else text
+
+
 def parse_uid_pids(text, uid):
     """`ps -A -o PID,UID` -> the pids running as `uid`.
 
@@ -808,6 +819,13 @@ class FtraceSocketEvents:
             print(f'[i] ftrace source off: {self.detail}')
             return self
         instance = f'{self.root}/instances/{FTRACE_INSTANCE}'
+        # A previous run killed hard — SIGKILL, a severed adb — leaves its reader
+        # alive on the device with the instance still enabled. `trace_pipe` is a
+        # consuming read: two readers on one pipe each get a share of the events
+        # and neither sees all of them. That is the worst failure this source
+        # could have, because it looks like a healthy run that quietly lost half
+        # its evidence. So the first thing done here is to clear the ground.
+        self._evict_stale(instance)
         # An instance of our own: its own buffer, its own pid filter, its own
         # enable switches. Writing to the global ones would silently reconfigure
         # tracing for anything else using it, and leave it that way afterwards.
@@ -846,14 +864,63 @@ class FtraceSocketEvents:
             if thread:
                 thread.join(timeout)
         if self.root:
-            # Leaving the tracepoint on would keep filling a buffer on a device
-            # nobody is watching any more.
-            instance = f'{self.root}/instances/{FTRACE_INSTANCE}'
-            priv(self.serial, f'echo 0 > {instance}/events/{FTRACE_EVENT}/enable '
-                              f'2>/dev/null ; rmdir {instance} 2>/dev/null')
+            self._teardown()
         return self.artifact()
 
+    def _teardown(self):
+        """Switch the tracepoint off and take the instance with it.
+
+        The tracepoint goes first and unconditionally: leaving it on keeps
+        filling a buffer on a device nobody is watching. The directory then has
+        to be retried, because a tracing instance cannot be removed while a
+        reader is still attached and the device-side `cat` does not die the
+        instant it is signalled. Left as a single attempt, this reported success
+        and walked away from an instance that was still there.
+        """
+        instance = f'{self.root}/instances/{FTRACE_INSTANCE}'
+        priv(self.serial,
+             f'echo 0 > {instance}/events/{FTRACE_EVENT}/enable 2>/dev/null')
+        # The pid file is written by the reader itself, so a run stopped moments
+        # after starting reaches here before it exists — the kill then has no
+        # argument and the reader lives on. Falling back to the instance path is
+        # safe precisely because the path is ours: nothing else on the device
+        # reads *this* instance's pipe.
+        #
+        # See self_immune_pattern: the unbracketed form kills its own shell, and
+        # here that meant the rmdir after it never ran.
+        pattern = f'instances/{self_immune_pattern(FTRACE_INSTANCE)}/trace_pipe'
+        priv(self.serial, f'pkill -f "{pattern}" 2>/dev/null')
+        for attempt in range(6):
+            priv(self.serial, f'rmdir {instance} 2>/dev/null')
+            if not device_has(self.serial, f'test -d {instance}'):
+                return
+            time.sleep(0.3)
+        # Harmless in itself — the tracepoint is off — and the next run evicts
+        # it. Said out loud anyway: silence here is how residue accumulates.
+        print(f'[i] ftrace: {instance} could not be removed; the next run will '
+              f'clear it')
+
     # -- device plumbing ---------------------------------------------------
+    def _evict_stale(self, instance):
+        """Remove whatever a previous run left behind, and say if there was any.
+
+        Killed by pid file, never by name: `pkill -f trace_pipe` would take out
+        anyone else on the device reading a trace, which is exactly the rudeness
+        this class avoids by using an instance of its own.
+        """
+        result = priv(self.serial,
+                      f'if [ -e {FTRACE_PIDFILE} ]; then '
+                      f'  kill $(cat {FTRACE_PIDFILE}) 2>/dev/null && echo __DT_KILLED__; '
+                      f'  rm -f {FTRACE_PIDFILE}; '
+                      f'fi ; '
+                      f'if [ -d {instance} ]; then '
+                      f'  echo 0 > {instance}/events/{FTRACE_EVENT}/enable 2>/dev/null; '
+                      f'  rmdir {instance} 2>/dev/null && echo __DT_REMOVED__; '
+                      f'fi')
+        out = result.stdout or ''
+        if '__DT_KILLED__' in out or '__DT_REMOVED__' in out:
+            print('[i] ftrace: cleared a leftover instance from an earlier run')
+
     def _find_tracefs(self):
         for root in TRACEFS_ROOTS:
             if device_has(self.serial, f'test -d {root}/events'):

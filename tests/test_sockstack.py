@@ -6,6 +6,7 @@ Unit tests for sockstack's pure logic — no device, no Frida, no friTap.
 import datetime
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -1037,3 +1038,26 @@ class FtraceFixedPids(unittest.TestCase):
         stream._refresh_pids()
         stream._refresh_pids()
         self.assertEqual(len(written), 1)
+
+
+class SelfImmunePattern(unittest.TestCase):
+    """`pkill -f` matches whole command lines including the one running it. This
+    cost real time three separate times: it killed an ssh session, a panel
+    restart, and the rmdir that was supposed to follow it."""
+
+    def test_it_still_matches_the_process_it_is_meant_to_kill(self):
+        pattern = sockstack.self_immune_pattern('sockstack')
+        self.assertIsNotNone(re.search(pattern, 'cat /sys/.../sockstack/trace_pipe'))
+
+    def test_it_does_not_match_the_command_line_that_names_it(self):
+        pattern = sockstack.self_immune_pattern('sockstack')
+        own_command_line = f'sh -c pkill -f "{pattern}" ; rmdir /sys/...'
+        self.assertIsNone(re.search(pattern, own_command_line))
+
+    def test_the_naive_form_is_the_bug_this_prevents(self):
+        # Left as documentation: the plain string matches its own command line,
+        # which is exactly how the shell killed itself.
+        self.assertIsNotNone(re.search('sockstack', 'sh -c pkill -f "sockstack"'))
+
+    def test_empty_input_is_not_a_crash(self):
+        self.assertEqual(sockstack.self_immune_pattern(''), '')
