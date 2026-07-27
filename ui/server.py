@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""
+sockstack ui — a local web front-end for the sockstack CLI.
+
+The CLI is the product; this is a window onto it. Every run it starts is an
+ordinary `sockstack.py` invocation whose artifacts land in an ordinary output
+directory, so anything done here can be redone, scripted or audited without it.
+
+It exists for one reason above the others: driving the target. Reaching the
+network usually means touching the app, and from a terminal that is
+`input tap 797 1284` — coordinates obtained by dumping the view hierarchy,
+parsing XML and computing a centre by hand, which is slow and lands on the wrong
+thing often enough to cost a whole run. Here the device's screen is on the page
+and the view hierarchy is an overlay, so a tap is a click on the button rather
+than a guess at where the button is.
+
+    python3 ui/server.py                 # http://127.0.0.1:8722
+
+Security, stated plainly rather than assumed: this server runs adb commands and
+installs APKs on the attached device. Anyone who can reach it can do the same.
+There is no authentication. It binds to loopback only unless told otherwise, and
+the right way to use it from another machine is an SSH tunnel:
+
+    ssh -L 8722:127.0.0.1:8722 user@analysis-host
+
+`--bind` exists for the cases where that is impractical, and says what it costs.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+SOCKSTACK = os.path.join(ROOT, 'sockstack.py')
+SETUP_DEVICE = os.path.join(ROOT, 'setup-device.sh')
+# Enough history that a long run stays readable, bounded so a chatty target
+# cannot exhaust memory on the analysis host.
+LOG_LINES = 4000
+
+
+# --------------------------------------------------------------------------- adb plumbing
+
+def adb(serial, *args, timeout=60, binary=False):
+    """Run an adb command. Returns (ok, output)."""
+    cmd = ['adb'] + (['-s', serial] if serial else []) + list(args)
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except FileNotFoundError:
+        return False, b'' if binary else 'adb not found in PATH'
+    except subprocess.TimeoutExpired:
+        return False, b'' if binary else f'adb timed out after {timeout}s'
+    if binary:
+        return result.returncode == 0, result.stdout
+    text = (result.stdout or b'').decode('utf-8', 'replace')
+    err = (result.stderr or b'').decode('utf-8', 'replace')
+    return result.returncode == 0, text if result.returncode == 0 else (err or text)
+
+
+# --------------------------------------------------------------------------- parsing (pure)
+
+def parse_devices(text):
+    """`adb devices -l` -> [{serial, state, model}].
+
+    Devices that are present but not usable — unauthorized, offline — are kept
+    and labelled rather than filtered out: "no devices" when one is plugged in
+    and unauthorized sends the reader looking for a cable problem.
+    """
+    devices = []
+    for line in (text or '').splitlines():
+        line = line.strip()
+        if not line or line.startswith('List of devices'):
+            continue
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        model = ''
+        for field in fields[2:]:
+            if field.startswith('model:'):
+                model = field[len('model:'):].replace('_', ' ')
+        devices.append({'serial': fields[0], 'state': fields[1], 'model': model})
+    return devices
+
+
+def parse_packages(listing, times=None):
+    """`pm list packages -3 -U` (+ optional install times) -> sorted newest first.
+
+    Newest first because the package you want is almost always the one you just
+    installed, and its name rarely resembles the file it came from.
+    """
+    packages = []
+    for line in (listing or '').splitlines():
+        fields = line.strip().split()
+        if not fields or not fields[0].startswith('package:'):
+            continue
+        name = fields[0][len('package:'):]
+        uid = None
+        for field in fields[1:]:
+            if field.startswith('uid:') and field[4:].isdigit():
+                uid = int(field[4:])
+        packages.append({'package': name, 'uid': uid,
+                         'installed': (times or {}).get(name, '')})
+    packages.sort(key=lambda p: (p['installed'] or '', p['package']), reverse=True)
+    return packages
+
+
+BOUNDS_RE = re.compile(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]')
+
+
+def parse_ui_elements(xml):
+    """uiautomator XML -> clickable elements with their centres.
+
+    Only clickable nodes are kept, and each carries whatever identifies it to a
+    human: the resource id, the visible text, the content description. Clicking
+    `installUpdateBtn` is a different act from clicking the point 797,1284 — the
+    first survives a device with another screen size, the second does not.
+    """
+    elements = []
+    for node in re.finditer(r'<node\b[^>]*/?>', xml or ''):
+        tag = node.group(0)
+        if 'clickable="true"' not in tag:
+            continue
+        bounds = BOUNDS_RE.search(tag)
+        if not bounds:
+            continue
+        x1, y1, x2, y2 = (int(v) for v in bounds.groups())
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        def attr(name):
+            found = re.search(rf'{name}="([^"]*)"', tag)
+            return found.group(1) if found else ''
+
+        resource = attr('resource-id').rsplit('/', 1)[-1]
+        elements.append({
+            'id': resource,
+            'text': attr('text'),
+            'desc': attr('content-desc'),
+            'cls': attr('class').rsplit('.', 1)[-1],
+            'bounds': [x1, y1, x2, y2],
+            'center': [(x1 + x2) // 2, (y1 + y2) // 2],
+        })
+    return elements
+
+
+def parse_install_times(dumps):
+    """{package: 'YYYY-MM-DD HH:MM:SS'} from concatenated `dumpsys package` output."""
+    times, current = {}, None
+    for line in (dumps or '').splitlines():
+        line = line.strip()
+        if line.startswith('== '):
+            current = line[3:].strip()
+        elif current and line.startswith('firstInstallTime='):
+            times[current] = line.split('=', 1)[1].strip()
+    return times
+
+
+# --------------------------------------------------------------------------- the run
+
+class Run:
+    """One sockstack invocation, with its output kept for the page to poll.
+
+    Deliberately at most one at a time: two runs share a device, a frida-server
+    and a tcpdump, and letting the UI start a second would corrupt both in ways
+    the artifacts would not explain.
+    """
+
+    def __init__(self):
+        self.process = None
+        self.lines = deque(maxlen=LOG_LINES)
+        self.first_index = 0
+        self.command = []
+        self.output_dir = ''
+        self.started = 0.0
+        self.lock = threading.Lock()
+
+    @property
+    def running(self):
+        return self.process is not None and self.process.poll() is None
+
+    def start(self, command, output_dir, label):
+        if self.running:
+            return False, 'a run is already in progress'
+        with self.lock:
+            self.lines.clear()
+            self.first_index = 0
+            self.command = command
+            self.output_dir = output_dir
+            self.started = time.time()
+        self._append(f'$ {label}')
+        self.process = subprocess.Popen(
+            command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, errors='replace')
+        threading.Thread(target=self._drain, daemon=True).start()
+        return True, 'started'
+
+    def _append(self, line):
+        with self.lock:
+            if len(self.lines) == self.lines.maxlen:
+                self.first_index += 1
+            self.lines.append(line)
+
+    def _drain(self):
+        for line in self.process.stdout:
+            # The CLI redraws its progress counter with \r; keep only the last
+            # state of it so the log does not fill with partial repeats.
+            self._append(line.rstrip('\n').split('\r')[-1])
+        code = self.process.wait()
+        self._append(f'— finished, exit status {code} —')
+
+    def stop(self):
+        """Ask for an early finish rather than killing: the CLI treats SIGINT as
+        'wrap up now', and everything collected so far is still written out."""
+        if not self.running:
+            return False, 'nothing is running'
+        self.process.send_signal(signal.SIGINT)
+        return True, 'asked the run to finish early'
+
+    def tail(self, since):
+        with self.lock:
+            start = max(0, since - self.first_index)
+            return {'lines': list(self.lines)[start:],
+                    'next': self.first_index + len(self.lines),
+                    'running': self.running,
+                    'output': self.output_dir,
+                    'elapsed': int(time.time() - self.started) if self.started else 0}
+
+
+RUN = Run()
+
+
+# --------------------------------------------------------------------------- http
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = 'sockstack-ui'
+
+    def log_message(self, *args):
+        pass        # the run log is the interesting output, not access lines
+
+    # -- helpers -----------------------------------------------------------
+    def _send(self, code, body, content_type='application/json'):
+        if isinstance(body, (dict, list)):
+            body = json.dumps(body).encode()
+        elif isinstance(body, str):
+            body = body.encode()
+        self.send_response(code)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self):
+        length = int(self.headers.get('Content-Length') or 0)
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length) or b'{}')
+        except json.JSONDecodeError:
+            return {}
+
+    # -- routing -----------------------------------------------------------
+    def do_GET(self):
+        url = urlparse(self.path)
+        query = {k: v[0] for k, v in parse_qs(url.query).items()}
+        serial = query.get('device') or None
+        try:
+            if url.path in ('/', '/index.html'):
+                with open(os.path.join(HERE, 'index.html'), 'rb') as fh:
+                    return self._send(200, fh.read(), 'text/html; charset=utf-8')
+            if url.path == '/api/devices':
+                ok, out = adb(None, 'devices', '-l')
+                return self._send(200, {'ok': ok, 'devices': parse_devices(out) if ok else [],
+                                        'error': '' if ok else out})
+            if url.path == '/api/packages':
+                return self._send(200, self._packages(serial))
+            if url.path == '/api/screen':
+                ok, png = adb(serial, 'exec-out', 'screencap', '-p', binary=True)
+                if not ok or not png.startswith(b'\x89PNG'):
+                    return self._send(503, {'error': 'screencap failed'})
+                return self._send(200, png, 'image/png')
+            if url.path == '/api/elements':
+                return self._send(200, self._elements(serial))
+            if url.path == '/api/log':
+                return self._send(200, RUN.tail(int(query.get('since') or 0)))
+            if url.path == '/api/report':
+                return self._send(200, self._report(query.get('dir') or ''))
+            return self._send(404, {'error': 'no such endpoint'})
+        except Exception as exc:                            # noqa: BLE001
+            return self._send(500, {'error': f'{type(exc).__name__}: {exc}'})
+
+    def do_POST(self):
+        url = urlparse(self.path)
+        data = self._body()
+        serial = data.get('device') or None
+        try:
+            if url.path == '/api/tap':
+                ok, out = adb(serial, 'shell', 'input', 'tap',
+                              str(int(data['x'])), str(int(data['y'])))
+                return self._send(200, {'ok': ok, 'output': out})
+            if url.path == '/api/swipe':
+                ok, out = adb(serial, 'shell', 'input', 'swipe',
+                              str(int(data['x1'])), str(int(data['y1'])),
+                              str(int(data['x2'])), str(int(data['y2'])),
+                              str(int(data.get('ms', 300))))
+                return self._send(200, {'ok': ok, 'output': out})
+            if url.path == '/api/key':
+                ok, out = adb(serial, 'shell', 'input', 'keyevent', str(data['key']))
+                return self._send(200, {'ok': ok, 'output': out})
+            if url.path == '/api/launch':
+                ok, out = adb(serial, 'shell', 'monkey', '-p', str(data['package']),
+                              '-c', 'android.intent.category.LAUNCHER', '1')
+                return self._send(200, {'ok': ok, 'output': out})
+            if url.path == '/api/install':
+                return self._send(200, self._install(serial, data.get('path', '')))
+            if url.path == '/api/setup':
+                return self._send(200, self._setup(serial, data.get('frida', '')))
+            if url.path == '/api/run':
+                return self._send(200, self._run(data))
+            if url.path == '/api/stop':
+                ok, message = RUN.stop()
+                return self._send(200, {'ok': ok, 'message': message})
+            return self._send(404, {'error': 'no such endpoint'})
+        except Exception as exc:                            # noqa: BLE001
+            return self._send(500, {'error': f'{type(exc).__name__}: {exc}'})
+
+    # -- endpoint bodies ---------------------------------------------------
+    def _packages(self, serial):
+        ok, listing = adb(serial, 'shell', 'pm list packages -3 -U')
+        if not ok:
+            return {'ok': False, 'error': listing, 'packages': []}
+        names = [line.split()[0][len('package:'):]
+                 for line in listing.splitlines()
+                 if line.strip().startswith('package:')]
+        script = ' ; '.join(
+            f'echo "== {n}" ; dumpsys package {n} | grep -m1 firstInstallTime'
+            for n in names[:60])
+        times = {}
+        if script:
+            got, dumps = adb(serial, 'shell', script, timeout=90)
+            if got:
+                times = parse_install_times(dumps)
+        return {'ok': True, 'packages': parse_packages(listing, times)}
+
+    def _elements(self, serial):
+        ok, out = adb(serial, 'shell',
+                      'uiautomator dump /sdcard/sockstack_ui.xml >/dev/null 2>&1 ; '
+                      'cat /sdcard/sockstack_ui.xml ; rm -f /sdcard/sockstack_ui.xml',
+                      timeout=45)
+        if not ok or '<node' not in out:
+            # A screen mid-animation has no stable hierarchy to dump. That is
+            # normal and temporary; saying so beats an empty overlay.
+            return {'ok': False, 'elements': [],
+                    'error': 'no view hierarchy right now (screen busy?)'}
+        return {'ok': True, 'elements': parse_ui_elements(out)}
+
+    def _package_names(self, serial):
+        """Names only — the install-time lookup costs one adb call per package
+        and is not worth paying twice around an install."""
+        ok, listing = adb(serial, 'shell', 'pm list packages -3')
+        return {line.strip()[len('package:'):] for line in (listing or '').splitlines()
+                if line.strip().startswith('package:')} if ok else set()
+
+    def _install(self, serial, path):
+        if not path or not os.path.isfile(path):
+            return {'ok': False, 'output': f'no such file: {path}'}
+        before = self._package_names(serial)
+        ok, out = adb(serial, 'install', '-r', path, timeout=300)
+        after = self._packages(serial).get('packages', [])
+        fresh = [p for p in after if p['package'] not in before]
+        return {'ok': ok, 'output': out.strip(),
+                # The whole point of doing the install here: the name the tracer
+                # needs is the one thing the APK's filename will not tell you.
+                'installed': fresh[0]['package'] if len(fresh) == 1 else '',
+                'packages': after}
+
+    def _setup(self, serial, frida):
+        if not os.path.isfile(SETUP_DEVICE):
+            return {'ok': False, 'output': 'setup-device.sh is missing'}
+        command = ['bash', SETUP_DEVICE, serial] + ([frida] if frida else [])
+        ok, message = RUN.start(command, '', ' '.join(command))
+        return {'ok': ok, 'message': 'provisioning; watch the log' if ok else message}
+
+    def _run(self, data):
+        output = (data.get('output') or '').strip()
+        if not output:
+            return {'ok': False, 'message': 'choose an output directory'}
+        command = [sys.executable, SOCKSTACK, '--output', output]
+        if data.get('host'):
+            command.append('--host')
+        else:
+            command += ['--device', data.get('device') or '']
+        if data.get('package'):
+            command += ['--package', data['package']]
+        if data.get('duration'):
+            command += ['--duration', str(int(data['duration']))]
+        if data.get('attach'):
+            command.append('--attach')
+        if data.get('anti_root'):
+            command.append('--anti-root')
+        if data.get('postprocess_only'):
+            command.append('--postprocess-only')
+        ok, message = RUN.start(command, output, ' '.join(command))
+        return {'ok': ok, 'message': message}
+
+    def _report(self, directory):
+        if not directory or not os.path.isdir(directory):
+            return {'ok': False, 'error': 'no such directory', 'reports': []}
+        reports = sorted(n for n in os.listdir(directory)
+                         if n.startswith('summary_') and n.endswith('.md'))
+        if not reports:
+            return {'ok': False, 'error': 'no summary in this directory',
+                    'reports': [], 'artifacts': sorted(os.listdir(directory))}
+        with open(os.path.join(directory, reports[-1]), encoding='utf-8',
+                  errors='replace') as fh:
+            body = fh.read()
+        return {'ok': True, 'name': reports[-1], 'body': body,
+                'reports': reports, 'artifacts': sorted(os.listdir(directory))}
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description='Local web front-end for sockstack: pick a device, install a '
+                    'target, drive it by clicking its actual buttons, watch the run.')
+    ap.add_argument('--port', type=int, default=8722)
+    ap.add_argument('--bind', default='127.0.0.1',
+                    help='interface to listen on (default loopback; anything else '
+                         'exposes device control to that network — see below)')
+    args = ap.parse_args()
+
+    if not shutil.which('adb'):
+        print('[!] adb is not in PATH — device features will not work')
+    if not os.path.exists(SOCKSTACK):
+        sys.exit(f'[!] {SOCKSTACK} not found: run this from a sockstack checkout')
+    if args.bind not in ('127.0.0.1', 'localhost', '::1'):
+        print(f'[!] listening on {args.bind}, not loopback. This server installs '
+              f'APKs and runs adb commands with no authentication: anyone who can '
+              f'reach it controls the device. Prefer an SSH tunnel:\n'
+              f'    ssh -L {args.port}:127.0.0.1:{args.port} <user>@<this host>')
+
+    server = ThreadingHTTPServer((args.bind, args.port), Handler)
+    print(f'[+] sockstack ui on http://{args.bind}:{args.port}')
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print('\n[+] stopped')
+
+
+if __name__ == '__main__':
+    main()

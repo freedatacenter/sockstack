@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added — an optional web front-end (`ui/`)
+
+Standard library only, so the CLI gains no dependencies and anyone uninterested
+in a browser loses nothing. It runs the same `sockstack.py` commands into the
+same output directories; nothing it does is unavailable without it.
+
+The reason it is worth having is not the form fields. Driving a target from a
+terminal means `input tap 797 1284`, with the coordinates obtained by dumping the
+view hierarchy, parsing XML and computing a centre by hand — slow, and wrong
+often enough to cost a run. The page renders the device's screen with every
+clickable element outlined by its resource id, so a tap is a click on
+`installUpdateBtn` rather than an aim at a point. Verified against a live dropper:
+both buttons found, centres matching the ones previously worked out by hand.
+
+Also: device list (including devices present but unauthorized, rather than an
+empty list), package list newest-install first with the UID, APK install that
+reports the package name it registered under, launch, back/home, and the run log
+streamed while it happens.
+
+No authentication, and it controls the device — it binds to loopback, and says
+what `--bind` costs.
+
+
 ## 2.3.1
 
 Review of 2.3.0 found that the safety net added there could itself go quietly

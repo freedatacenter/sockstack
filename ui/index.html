@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sockstack</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #fff; --ink: #1a1a19; --dim: #6b6b68;
+    --line: #e0e0dc; --accent: #2f6f4f; --warn: #a04a1e; --code: #f4f4f1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --panel: #1d1f23; --ink: #e6e6e3; --dim: #9a9a96;
+      --line: #33363c; --accent: #7fc4a0; --warn: #e0975f; --code: #131417;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+  header .note { color: var(--dim); font-size: 12px; }
+  main { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(300px, 420px); gap: 18px; padding: 18px 20px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 8px 0 3px; }
+  input, select, button, textarea {
+    font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; width: 100%;
+  }
+  button { background: var(--panel); cursor: pointer; width: auto; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+  .row > * { flex: 1 1 120px; }
+  .row > button { flex: 0 0 auto; }
+  .checks { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
+  .checks label { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--ink); font-size: 13px; }
+  .checks input { width: auto; }
+  #log {
+    background: var(--code); border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px 12px; height: 320px; overflow: auto; white-space: pre-wrap;
+    font: 12px/1.55 ui-monospace, monospace; word-break: break-word;
+  }
+  .stage { position: relative; display: inline-block; line-height: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .stage img { display: block; width: 100%; height: auto; }
+  .hit { position: absolute; border: 1px solid rgba(127,196,160,.75); background: rgba(127,196,160,.10); cursor: pointer; }
+  .hit:hover { background: rgba(127,196,160,.28); }
+  .hit span {
+    position: absolute; left: 0; top: -17px; font: 10px/1.4 ui-monospace, monospace;
+    background: var(--accent); color: var(--bg); padding: 0 4px; border-radius: 3px; white-space: nowrap;
+  }
+  .status { font-size: 12px; color: var(--dim); margin-top: 8px; min-height: 18px; }
+  .status.warn { color: var(--warn); }
+  .pkg { font: 12px/1.5 ui-monospace, monospace; }
+  .muted { color: var(--dim); font-size: 12px; }
+  #report { max-height: 420px; overflow: auto; white-space: pre-wrap; font: 12px/1.55 ui-monospace, monospace; background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>sockstack</h1>
+  <span class="note">which code path sent this — pick a device, drive the app, watch the run</span>
+</header>
+
+<main>
+<div>
+  <section>
+    <h2>Device</h2>
+    <div class="row">
+      <div style="flex:1 1 220px">
+        <label for="device">attached</label>
+        <select id="device"></select>
+      </div>
+      <button id="refreshDevices">rescan</button>
+      <button id="setup">provision</button>
+    </div>
+    <div class="status" id="deviceStatus"></div>
+  </section>
+
+  <section>
+    <h2>Target</h2>
+    <div class="row">
+      <div style="flex:1 1 260px">
+        <label for="apk">APK on this host (optional — installs, then names itself)</label>
+        <input id="apk" placeholder="/path/to/target.apk">
+      </div>
+      <button id="install">install</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <div style="flex:1 1 260px">
+        <label for="package">package (newest install first)</label>
+        <select id="package" class="pkg"></select>
+      </div>
+      <button id="refreshPackages">reload</button>
+      <button id="launch">launch</button>
+    </div>
+    <div class="status" id="targetStatus"></div>
+  </section>
+
+  <section>
+    <h2>Run</h2>
+    <div class="row">
+      <div style="flex:2 1 220px">
+        <label for="output">output directory</label>
+        <input id="output" placeholder="./run">
+      </div>
+      <div style="flex:0 1 110px">
+        <label for="duration">seconds</label>
+        <input id="duration" type="number" value="200" min="10">
+      </div>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" id="attach"> attach (no launcher activity)</label>
+      <label><input type="checkbox" id="antiRoot"> anti-root</label>
+      <label><input type="checkbox" id="postOnly"> post-process only</label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="start">start run</button>
+      <button id="stop" disabled>finish early</button>
+      <button id="loadReport">open report</button>
+    </div>
+    <div class="status" id="runStatus"></div>
+  </section>
+
+  <section>
+    <h2>Log</h2>
+    <div id="log"></div>
+  </section>
+
+  <section id="reportBox" hidden>
+    <h2>Report</h2>
+    <div class="muted" id="reportName"></div>
+    <div id="report"></div>
+  </section>
+</div>
+
+<div>
+  <section>
+    <h2>Screen</h2>
+    <div class="row" style="margin-bottom:10px">
+      <button id="refreshScreen">refresh</button>
+      <button id="showHits">show tap targets</button>
+      <button id="back">back</button>
+      <button id="home">home</button>
+    </div>
+    <div class="stage" id="stage">
+      <img id="screen" alt="device screen">
+      <div id="overlay"></div>
+    </div>
+    <div class="status" id="screenStatus">
+      Click anywhere on the screen to tap it. “Show tap targets” outlines what the
+      view hierarchy says is clickable — clicking one taps its centre, which is
+      steadier than aiming at a pixel.
+    </div>
+  </section>
+</div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const post = (path, body) => fetch(path, {
+  method: 'POST', headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify(body || {})
+}).then(r => r.json());
+const get = path => fetch(path).then(r => r.json());
+const device = () => $('device').value;
+
+function say(el, text, warn) {
+  const node = $(el);
+  node.textContent = text || '';
+  node.className = 'status' + (warn ? ' warn' : '');
+}
+
+// -- devices ---------------------------------------------------------------
+async function loadDevices() {
+  const data = await get('/api/devices');
+  const select = $('device');
+  const previous = select.value;
+  select.innerHTML = '';
+  (data.devices || []).forEach(d => {
+    const option = document.createElement('option');
+    option.value = d.serial;
+    option.textContent = d.serial + (d.model ? ` — ${d.model}` : '') +
+                         (d.state === 'device' ? '' : `  [${d.state}]`);
+    option.disabled = d.state !== 'device';
+    select.appendChild(option);
+  });
+  if (previous) select.value = previous;
+  const usable = (data.devices || []).filter(d => d.state === 'device').length;
+  say('deviceStatus',
+      data.error ? data.error :
+      usable ? `${usable} device(s) ready` :
+      'no usable device — an unauthorized one needs the prompt accepted on screen',
+      !!data.error || !usable);
+  if (usable) { loadPackages(); refreshScreen(); }
+}
+
+// -- packages --------------------------------------------------------------
+async function loadPackages() {
+  if (!device()) return;
+  say('targetStatus', 'reading installed packages…');
+  const data = await get('/api/packages?device=' + encodeURIComponent(device()));
+  const select = $('package');
+  select.innerHTML = '';
+  (data.packages || []).forEach(p => {
+    const option = document.createElement('option');
+    option.value = p.package;
+    option.textContent = p.package + (p.installed ? `   ${p.installed}` : '');
+    select.appendChild(option);
+  });
+  say('targetStatus', data.ok ? `${(data.packages || []).length} third-party package(s)`
+                              : (data.error || 'could not list packages'), !data.ok);
+}
+
+// -- screen and tap targets ------------------------------------------------
+let hitsShown = false;
+function refreshScreen() {
+  if (!device()) return;
+  $('screen').src = '/api/screen?device=' + encodeURIComponent(device()) + '&t=' + Date.now();
+  if (hitsShown) loadHits();
+}
+
+$('screen').addEventListener('load', () => { if (hitsShown) loadHits(); });
+
+async function loadHits() {
+  const image = $('screen');
+  if (!image.naturalWidth) return;
+  const data = await get('/api/elements?device=' + encodeURIComponent(device()));
+  const overlay = $('overlay');
+  overlay.innerHTML = '';
+  if (!data.ok) { say('screenStatus', data.error || 'no hierarchy', true); return; }
+  const scale = image.clientWidth / image.naturalWidth;
+  (data.elements || []).forEach(el => {
+    const [x1, y1, x2, y2] = el.bounds;
+    const box = document.createElement('div');
+    box.className = 'hit';
+    box.style.left = (x1 * scale) + 'px';
+    box.style.top = (y1 * scale) + 'px';
+    box.style.width = ((x2 - x1) * scale) + 'px';
+    box.style.height = ((y2 - y1) * scale) + 'px';
+    const name = el.id || el.text || el.desc || el.cls;
+    if (name) {
+      const tag = document.createElement('span');
+      tag.textContent = name.length > 34 ? name.slice(0, 33) + '…' : name;
+      box.appendChild(tag);
+    }
+    box.title = `${el.cls} ${el.id ? '#' + el.id : ''} ${el.text}`.trim();
+    box.onclick = event => {
+      event.stopPropagation();
+      tap(el.center[0], el.center[1], name);
+    };
+    overlay.appendChild(box);
+  });
+  say('screenStatus', `${(data.elements || []).length} clickable element(s)`);
+}
+
+async function tap(x, y, what) {
+  await post('/api/tap', {device: device(), x, y});
+  say('screenStatus', what ? `tapped ${what}` : `tapped ${x},${y}`);
+  setTimeout(refreshScreen, 700);
+}
+
+$('stage').addEventListener('click', event => {
+  const image = $('screen');
+  if (!image.naturalWidth) return;
+  const rect = image.getBoundingClientRect();
+  const scale = image.naturalWidth / rect.width;
+  tap(Math.round((event.clientX - rect.left) * scale),
+      Math.round((event.clientY - rect.top) * scale));
+});
+
+// -- run -------------------------------------------------------------------
+let since = 0;
+async function pollLog() {
+  const data = await get('/api/log?since=' + since);
+  if (data.lines && data.lines.length) {
+    const log = $('log');
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    log.textContent += (log.textContent ? '\n' : '') + data.lines.join('\n');
+    if (atBottom) log.scrollTop = log.scrollHeight;
+    since = data.next;
+  }
+  $('stop').disabled = !data.running;
+  $('start').disabled = !!data.running;
+  if (data.running) say('runStatus', `running — ${data.elapsed}s elapsed`);
+  setTimeout(pollLog, data.running ? 1000 : 2500);
+}
+
+$('start').onclick = async () => {
+  $('log').textContent = ''; since = 0;
+  const data = await post('/api/run', {
+    device: device(), package: $('package').value, output: $('output').value,
+    duration: $('duration').value, attach: $('attach').checked,
+    anti_root: $('antiRoot').checked, postprocess_only: $('postOnly').checked,
+  });
+  say('runStatus', data.message || '', !data.ok);
+};
+
+$('stop').onclick = async () => say('runStatus', (await post('/api/stop')).message);
+
+$('install').onclick = async () => {
+  say('targetStatus', 'installing…');
+  const data = await post('/api/install', {device: device(), path: $('apk').value});
+  await loadPackages();
+  if (data.installed) {
+    $('package').value = data.installed;
+    say('targetStatus', `installed — package is ${data.installed}`);
+  } else {
+    say('targetStatus', data.output || 'install finished', !data.ok);
+  }
+};
+
+$('setup').onclick = async () => {
+  $('log').textContent = ''; since = 0;
+  const data = await post('/api/setup', {device: device()});
+  say('deviceStatus', data.message || '', !data.ok);
+};
+
+$('launch').onclick = async () => {
+  await post('/api/launch', {device: device(), package: $('package').value});
+  say('targetStatus', `launched ${$('package').value}`);
+  setTimeout(refreshScreen, 1200);
+};
+
+$('loadReport').onclick = async () => {
+  const data = await get('/api/report?dir=' + encodeURIComponent($('output').value));
+  $('reportBox').hidden = false;
+  $('reportName').textContent = data.ok ? data.name : (data.error || '');
+  $('report').textContent = data.ok ? data.body : (data.artifacts || []).join('\n');
+};
+
+$('refreshDevices').onclick = loadDevices;
+$('refreshPackages').onclick = loadPackages;
+$('refreshScreen').onclick = refreshScreen;
+$('device').onchange = () => { loadPackages(); refreshScreen(); };
+$('showHits').onclick = () => {
+  hitsShown = !hitsShown;
+  $('showHits').textContent = hitsShown ? 'hide tap targets' : 'show tap targets';
+  if (hitsShown) loadHits(); else $('overlay').innerHTML = '';
+};
+$('back').onclick = () => post('/api/key', {device: device(), key: 'KEYCODE_BACK'})
+  .then(() => setTimeout(refreshScreen, 600));
+$('home').onclick = () => post('/api/key', {device: device(), key: 'KEYCODE_HOME'})
+  .then(() => setTimeout(refreshScreen, 600));
+
+loadDevices();
+pollLog();
+</script>
+</body>
+</html>

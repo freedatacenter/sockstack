@@ -162,6 +162,32 @@ command line, so a report cannot misstate which target it belongs to.
 --no-postprocess    capture only
 ```
 
+## Web UI (optional)
+
+```bash
+python3 ui/server.py            # http://127.0.0.1:8722
+```
+
+Standard library only — nothing to install, and nothing added to the CLI's
+dependencies for people who do not want it. It starts ordinary `sockstack.py`
+runs whose artifacts land in ordinary directories, so nothing done here becomes
+undoable elsewhere.
+
+It exists mainly for one thing: **driving the target**. Reaching the network
+usually means touching the app, and from a terminal that is `input tap 797 1284`
+— coordinates obtained by dumping the view hierarchy, parsing XML and computing a
+centre by hand. The page shows the device's screen with the clickable elements
+outlined, so you click `installUpdateBtn`, not a pixel. It also lists attached
+devices, installs an APK and tells you the package name it registered under,
+launches the target, and streams the run log.
+
+**It has no authentication and it controls the device.** It binds to loopback;
+reach it from another machine with a tunnel rather than `--bind`:
+
+```bash
+ssh -L 8722:127.0.0.1:8722 user@analysis-host
+```
+
 ## Emulator vs physical phone
 
 | | Emulator (userdebug) | Physical phone (Magisk) |
