@@ -181,6 +181,15 @@ sites, records, whether the Java bridge worked. Never "clean" — a run that fou
 nothing and a run whose bridge failed look identical from outside, and only one
 of those is reassuring.
 
+**Connecting a stand.** Under the device list: an address (`host`, or `host:port`
+— 5555 is assumed) and **connect**, which is `adb connect`. Its own sentence is
+shown either way, and it is judged by that sentence rather than by its exit
+status, because `adb connect` exits 0 while printing "failed to connect to…".
+Wireless debugging on Android 11+ pairs first, on a different port with a
+six-digit code the device shows you; that lives behind **pair a wireless
+device…** on the same card. Devices connected over the network carry a ✕ to
+disconnect them; USB ones do not, since there would be nothing to disconnect.
+
 **Installing the target.** Second card on the launch screen: drop an APK on it,
 or give a path already on the analysis host. The upload matters when the browser
 is not on the machine holding the device — the usual shape, a laptop tunnelled

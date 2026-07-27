@@ -88,6 +88,33 @@ def adb(serial, *args, timeout=60, binary=False):
 
 # --------------------------------------------------------------------------- parsing (pure)
 
+def connect_verdict(ok, out):
+    """Did `adb connect` connect?
+
+    It exits 0 whether or not it did — "failed to connect to 10.0.0.5:5555" is a
+    successful run of a command that failed at its job. The exit status is
+    therefore not the answer; the sentence is. Reporting the exit status would
+    put a device in the list that is not there.
+    """
+    text = (out or '').strip()
+    good = text.lower().startswith(('connected to', 'already connected to'))
+    return {'ok': bool(ok) and good, 'output': text or 'adb said nothing at all'}
+
+
+def pair_verdict(ok, out):
+    """Same shape for `adb pair`, which also reports failure through its words."""
+    text = (out or '').strip()
+    return {'ok': bool(ok) and 'successfully paired' in text.lower(),
+            'output': text or 'adb said nothing at all'}
+
+
+def is_network_device(serial):
+    """host:port, as `adb connect` produces. USB serials have no colon, and a
+    port that is not a number is a serial that happens to contain one."""
+    host, _, port = (serial or '').rpartition(':')
+    return bool(host) and port.isdigit()
+
+
 def parse_devices(text):
     """`adb devices -l` -> [{serial, state, model}].
 
@@ -107,7 +134,8 @@ def parse_devices(text):
         for field in fields[2:]:
             if field.startswith('model:'):
                 model = field[len('model:'):].replace('_', ' ')
-        devices.append({'serial': fields[0], 'state': fields[1], 'model': model})
+        devices.append({'serial': fields[0], 'state': fields[1], 'model': model,
+                        'network': is_network_device(fields[0])})
     return devices
 
 
@@ -455,6 +483,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {'ok': ok, 'output': out})
             if url.path == '/api/install':
                 return self._send(200, self._install(serial, data.get('path', '')))
+            if url.path == '/api/connect':
+                address = (data.get('address') or '').strip()
+                if not address:
+                    return self._send(200, {'ok': False, 'output': 'give an address'})
+                # A bare host means the classic debug port; typing it every time
+                # is a tax on the common case.
+                if ':' not in address:
+                    address += ':5555'
+                ok, out = adb(None, 'connect', address, timeout=30)
+                return self._send(200, dict(connect_verdict(ok, out), address=address))
+            if url.path == '/api/disconnect':
+                ok, out = adb(None, 'disconnect', (data.get('address') or '').strip())
+                return self._send(200, {'ok': ok, 'output': (out or '').strip()})
+            if url.path == '/api/pair':
+                ok, out = adb(None, 'pair', (data.get('address') or '').strip(),
+                              (data.get('code') or '').strip(), timeout=60)
+                return self._send(200, pair_verdict(ok, out))
             if url.path == '/api/setup':
                 return self._send(200, self._setup(serial, data.get('frida', '')))
             if url.path == '/api/run':

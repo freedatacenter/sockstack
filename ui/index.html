@@ -87,6 +87,9 @@
   .device .meta { font-size: 12px; color: var(--dim); margin-top: 4px; }
   .state { font: 600 11px/1 var(--mono); letter-spacing: .04em; display: flex;
            align-items: center; gap: 6px; }
+  .unplug { font: 600 13px/1 var(--mono); color: var(--faint); cursor: pointer;
+            padding: 4px 6px; border-radius: 6px; flex: none; }
+  .unplug:hover { color: var(--bad); background: rgba(224,138,122,.1); }
   .drop { border: 1px dashed var(--line); border-radius: 10px; padding: 22px 16px;
           text-align: center; cursor: pointer; background: var(--sunken);
           transition: border-color .12s, background .12s; }
@@ -185,6 +188,33 @@
                 id="rescan" data-i18n="act.rescan"></span>
         </div>
         <div id="deviceList"></div>
+
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--hair)">
+          <label class="field" for="address" data-i18n="connect.label"></label>
+          <div style="display:flex;gap:8px">
+            <input class="chip" id="address" style="flex:1"
+                   placeholder="192.168.100.88:5555">
+            <button class="btn" id="connect" data-i18n="act.connect"></button>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-top:8px">
+            <span class="mono" style="font-size:11px;color:var(--faint)"
+                  data-i18n="connect.hint"></span>
+            <span class="mono" id="togglePair" data-i18n="act.pairShow"
+                  style="font-size:11px;color:var(--accent);cursor:pointer"></span>
+          </div>
+          <div id="pairBox" class="hidden" style="margin-top:10px">
+            <p style="margin:0 0 8px;font-size:11px;line-height:1.6;color:var(--faint)"
+               data-i18n="pair.why"></p>
+            <div style="display:flex;gap:8px">
+              <input class="chip" id="pairAddress" style="flex:1"
+                     placeholder="192.168.100.88:37021">
+              <input class="chip" id="pairCode" style="width:110px" placeholder="123456">
+              <button class="btn" id="pair" data-i18n="act.pair"></button>
+            </div>
+          </div>
+          <div class="status" id="connectStatus"></div>
+        </div>
+
         <div style="display:flex;align-items:center;gap:10px;margin-top:16px;
                     padding-top:16px;border-top:1px solid var(--hair)">
           <span class="mono" id="fridaState" style="font-size:12px;color:var(--dim)"></span>
@@ -320,6 +350,17 @@ const STRINGS = {
     'launch.security': 'No authentication · drives the device. Reach it from ' +
                        'elsewhere over an SSH tunnel only.',
     'card.devices': '1 · Devices · attached',
+    'connect.label': 'a device over the network (emulator, stand, wireless debugging)',
+    'connect.hint': 'host, or host:port — 5555 assumed',
+    'pair.why': 'Android 11+ wireless debugging pairs first, on a different port. ' +
+                'Both the port and the six-digit code are shown by the pairing ' +
+                'dialog on the device, and both change every time.',
+    'act.connect': 'connect',
+    'act.disconnect': 'disconnect',
+    'act.pair': 'pair',
+    'act.pairShow': 'pair a wireless device…',
+    'act.pairHide': 'hide pairing',
+    'st.paired': 'paired — now connect on the debugging port',
     'card.install': '2 · Install an APK',
     'card.recent': 'Recent runs',
     'card.screen': 'Screen',
@@ -396,6 +437,17 @@ const STRINGS = {
     'launch.security': 'Без аутентификации · управляет устройством. Наружу — ' +
                        'только через SSH-туннель.',
     'card.devices': '1 · Устройства · подключено',
+    'connect.label': 'устройство по сети (эмулятор, стенд, беспроводная отладка)',
+    'connect.hint': 'хост или хост:порт — по умолчанию 5555',
+    'pair.why': 'Беспроводная отладка Android 11+ сначала требует сопряжения, и ' +
+                'порт для него другой. Порт и шестизначный код показывает диалог ' +
+                'сопряжения на самом устройстве, и оба меняются каждый раз.',
+    'act.connect': 'подключить',
+    'act.disconnect': 'отключить',
+    'act.pair': 'сопрячь',
+    'act.pairShow': 'сопряжение беспроводного устройства…',
+    'act.pairHide': 'скрыть сопряжение',
+    'st.paired': 'сопряжено — теперь подключитесь по порту отладки',
     'card.install': '2 · Установить APK',
     'card.recent': 'Последние запуски',
     'card.screen': 'Экран',
@@ -488,6 +540,8 @@ function applyLang() {
   $('toggleTargets').textContent = t(targetsOn ? 'act.hideTargets' : 'act.showTargets');
   $('expandLog').textContent = t($('log').classList.contains('tall')
                                  ? 'act.collapse' : 'act.expand');
+  $('togglePair').textContent = t($('pairBox').classList.contains('hidden')
+                                  ? 'act.pairShow' : 'act.pairHide');
   if (!RUN_RUNNING) $('statusText').textContent = t('st.idle');
   loadDevices(); loadRuns(); loadFindings();
 }
@@ -528,10 +582,18 @@ async function loadDevices() {
        </div>
        <span class="state" style="color:${ready ? 'var(--accent)' : 'var(--warn)'}">
          ${ready ? '<span class="dot" style="background:var(--accent)"></span>READY'
-                 : d.state.toUpperCase()}</span>`;
+                 : d.state.toUpperCase()}</span>
+       ${d.network ? `<span class="unplug" title="${t('act.disconnect')}">✕</span>` : ''}`;
     if (ready) {
       row.onclick = () => { select.value = d.serial; markSelected(); onDeviceChange(); };
     }
+    const unplug = row.querySelector('.unplug');
+    if (unplug) unplug.onclick = async event => {
+      event.stopPropagation();                     // not a device pick
+      const data = await post('/api/disconnect', {address: d.serial});
+      say('connectStatus', data.output, !data.ok);
+      loadDevices();
+    };
     list.appendChild(row);
     if (ready) {
       const option = document.createElement('option');
@@ -799,6 +861,35 @@ $('launchApp').onclick = async () => {
   await post('/api/launch', {device: dev(), package: $('package').value});
   setTimeout(refreshScreen, 1200);
 };
+// ---- connecting a device over the network ---------------------------------
+$('connect').onclick = async () => {
+  say('connectStatus', '…');
+  const data = await post('/api/connect', {address: $('address').value});
+  // adb's own sentence either way: it is the only place the outcome is stated.
+  say('connectStatus', data.output, !data.ok);
+  if (data.ok) {
+    await loadDevices();
+    $('device').value = data.address;
+    markSelected(); onDeviceChange();
+  }
+};
+$('address').addEventListener('keydown', e => { if (e.key === 'Enter') $('connect').click(); });
+$('togglePair').onclick = () => {
+  const shown = !$('pairBox').classList.toggle('hidden');
+  $('togglePair').textContent = t(shown ? 'act.pairHide' : 'act.pairShow');
+};
+$('pair').onclick = async () => {
+  say('connectStatus', '…');
+  const data = await post('/api/pair', {address: $('pairAddress').value,
+                                        code: $('pairCode').value});
+  say('connectStatus', data.ok ? `${data.output} — ${t('st.paired')}` : data.output,
+      !data.ok);
+  if (data.ok && !$('address').value) {
+    // The debugging port is a different one, so only the host carries over.
+    $('address').value = $('pairAddress').value.split(':')[0];
+  }
+};
+
 $('provision').onclick = async () => {
   const data = await post('/api/setup', {device: dev()});
   say('launchStatus', data.message, !data.ok);

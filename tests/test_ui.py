@@ -281,3 +281,69 @@ class Translations(unittest.TestCase):
         self.assertIn('id="install2"', work)
         # …and above the mirror, not under it.
         self.assertLess(work.index('id="install2"'), work.index('id="stage"'))
+
+
+# --------------------------------------------------------------------------- connecting
+
+class ConnectVerdict(unittest.TestCase):
+    """`adb connect` exits 0 when it fails. Believing the exit status puts a
+    device in the list that is not there, and the next thing the user does is
+    start a run against nothing."""
+
+    def test_a_connection_is_a_connection(self):
+        self.assertTrue(server.connect_verdict(
+            True, 'connected to 192.168.100.88:5555\n')['ok'])
+
+    def test_already_connected_is_not_a_failure(self):
+        self.assertTrue(server.connect_verdict(
+            True, 'already connected to 192.168.100.88:5555\n')['ok'])
+
+    def test_a_failure_that_exits_zero_is_still_a_failure(self):
+        verdict = server.connect_verdict(
+            True, 'failed to connect to 192.168.100.88:5555')
+        self.assertFalse(verdict['ok'])
+        self.assertIn('failed to connect', verdict['output'])
+
+    def test_a_refused_connection_is_reported_in_adbs_own_words(self):
+        verdict = server.connect_verdict(
+            True, 'unable to connect to 10.0.0.5:5555: Connection refused')
+        self.assertFalse(verdict['ok'])
+        self.assertIn('Connection refused', verdict['output'])
+
+    def test_a_missing_adb_is_a_failure_whatever_it_printed(self):
+        self.assertFalse(server.connect_verdict(False, 'adb not found in PATH')['ok'])
+
+    def test_silence_is_not_success(self):
+        verdict = server.connect_verdict(True, '')
+        self.assertFalse(verdict['ok'])
+        self.assertTrue(verdict['output'])
+
+    def test_pairing_is_judged_by_its_words_too(self):
+        self.assertTrue(server.pair_verdict(
+            True, 'Successfully paired to 192.168.100.88:37021 [guid=adb-x]')['ok'])
+        self.assertFalse(server.pair_verdict(
+            True, 'Failed: wrong pairing code')['ok'])
+
+
+class NetworkDevice(unittest.TestCase):
+    """Only a network device can be disconnected; offering it for a USB one is
+    an offer to do nothing."""
+
+    def test_host_and_port_is_a_network_device(self):
+        self.assertTrue(server.is_network_device('192.168.100.88:5555'))
+        self.assertTrue(server.is_network_device('emulator.stand.local:37021'))
+
+    def test_a_usb_serial_is_not(self):
+        self.assertFalse(server.is_network_device('39061FDJH00A3M'))
+        self.assertFalse(server.is_network_device('emulator-5554'))
+
+    def test_a_colon_alone_does_not_make_it_one(self):
+        self.assertFalse(server.is_network_device('weird:serial'))
+        self.assertFalse(server.is_network_device(':5555'))
+
+    def test_the_device_list_carries_the_flag(self):
+        listing = ('List of devices attached\n'
+                   '192.168.100.88:5555   device product:x model:Stand device:y\n'
+                   'emulator-5554         device product:z model:Emu device:w\n')
+        got = {d['serial']: d['network'] for d in server.parse_devices(listing)}
+        self.assertEqual(got, {'192.168.100.88:5555': True, 'emulator-5554': False})

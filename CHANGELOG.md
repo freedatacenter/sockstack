@@ -23,6 +23,14 @@ For the same reason recent runs are described by what they recorded — call
 sites, records, whether the bridge worked — and never as "clean". Nothing found
 and nothing working look identical from the outside.
 
+A stand reached over the network can be connected from the page: an address, a
+button, `adb connect` underneath, and pairing for Android 11+ wireless debugging
+behind a link since its port and code are different and change every time. The
+result is read from what adb says, not from how it exited — `adb connect` exits 0
+while printing "failed to connect to…", and believing the exit status would put a
+device in the list that is not there, which is discovered later as a run against
+nothing. Network devices carry a disconnect; USB ones do not.
+
 Getting the APK onto the device is now a step of the launch screen instead of a
 field below a phone-sized frame nobody scrolled past. It takes a drop or a file
 picker as well as a path, because the browser is usually not on the machine

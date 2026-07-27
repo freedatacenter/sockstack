@@ -52,6 +52,12 @@ steps 3 to 5: pick a device from a list that says what each one is, install an
 APK and be told the package name it registered under, start the run, and drive
 the target by clicking its buttons instead of computing tap coordinates.
 
+A stand that is not on USB is connected from the same screen: an address under
+the device list, `connect`, and it appears in the list — `adb connect` under the
+hand. Android 11+ wireless debugging needs pairing first, which is behind the
+link next to it; the port for pairing is not the port for debugging, and the
+device shows both.
+
 The APK goes in on the launch screen, second card: drop the file on it, or type
 a path that already exists on the host running `adb`. Dropping it uploads it to
 that host first, which is the case that matters when the browser is on your
