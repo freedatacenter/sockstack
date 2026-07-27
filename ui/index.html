@@ -727,7 +727,10 @@ async function loadTargets() {
 }
 async function tap(x, y, what) {
   await post('/api/tap', {device: dev(), x, y});
-  say('deviceStatus', `${t('st.tapped')} ${what || x + ',' + y}`);
+  // Naming the element you hit is worth a line — it is the resource-id you
+  // aimed at rather than the pixel. Repeating the coordinates you just clicked
+  // is not, so a bare tap clears the line instead of filling it.
+  say('deviceStatus', what ? `${t('st.tapped')} ${what}` : '');
   setTimeout(refreshScreen, 700);
 }
 $('stage').addEventListener('click', e => {
