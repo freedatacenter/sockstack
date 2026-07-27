@@ -771,16 +771,39 @@ class FtraceEventParsing(unittest.TestCase):
         self.assertEqual((event['pid'], event['comm']), (3421, 'curl'))
 
     def test_the_far_end_answering_is_established(self):
-        self.assertTrue(sockstack.parse_ftrace_socket_event(FTRACE_EST)['established'])
+        event = sockstack.parse_ftrace_socket_event(FTRACE_EST)
+        self.assertTrue(event['established'])
+        self.assertEqual(event['kind'], 'established')
+
+    def test_leaving_established_proves_the_connection_had_been_made(self):
+        # The form that actually arrives under a pid filter: the handshake event
+        # is recorded wherever the SYN-ACK was processed, but the socket's own
+        # task performs its teardown.
+        line = FTRACE_SYN.replace('oldstate=TCP_CLOSE newstate=TCP_SYN_SENT',
+                                  'oldstate=TCP_ESTABLISHED newstate=TCP_FIN_WAIT1')
+        event = sockstack.parse_ftrace_socket_event(line)
+        self.assertEqual(event['kind'], 'established')
+        self.assertTrue(event['established'])
+
+    def test_a_dial_is_marked_as_the_only_kind_that_may_add_a_destination(self):
+        self.assertEqual(sockstack.parse_ftrace_socket_event(FTRACE_SYN)['kind'], 'dial')
 
     def test_an_inbound_connection_is_not_somewhere_the_target_went(self):
-        # LISTEN -> SYN_RECV -> ESTABLISHED. Its "peer" dialled in; counting it
-        # would invent outbound traffic out of an open port.
+        # LISTEN -> SYN_RECV -> ESTABLISHED: its "peer" dialled in. Neither this
+        # nor its teardown may introduce a destination — an open port is not
+        # outbound traffic. This transition carries no `dial`, and the ledger
+        # refuses a confirmation for anything it never saw dialled.
         self.assertIsNone(sockstack.parse_ftrace_socket_event(FTRACE_INBOUND))
+        led = sockstack.FtraceSocketEvents(serial=None)
+        teardown = {'ip': '203.0.113.9', 'port': 44321, 'proto': 'tcp',
+                    'kind': 'established', 'established': True,
+                    'pid': 1234, 'comm': 'app'}
+        self.assertFalse(led.note(teardown))
+        self.assertEqual(led.artifact()['peers'], [])
 
     def test_uninteresting_transitions_are_dropped(self):
-        for states in ('oldstate=TCP_ESTABLISHED newstate=TCP_FIN_WAIT1',
-                       'oldstate=TCP_CLOSE newstate=TCP_LISTEN',
+        for states in ('oldstate=TCP_CLOSE newstate=TCP_LISTEN',
+                       'oldstate=TCP_LISTEN newstate=TCP_SYN_RECV',
                        'oldstate=TCP_FIN_WAIT2 newstate=TCP_CLOSE'):
             line = FTRACE_SYN.replace(
                 'oldstate=TCP_CLOSE newstate=TCP_SYN_SENT', states)
@@ -915,10 +938,12 @@ class FtraceAgainstRealKernelOutput(unittest.TestCase):
         return [sockstack.parse_ftrace_socket_event(line)
                 for line in FTRACE_REAL.splitlines()]
 
-    def test_the_connect_and_the_handshake_are_the_only_two_kept(self):
+    def test_the_dial_and_every_proof_of_establishment_are_kept(self):
         kept = [e for e in self.events() if e]
-        self.assertEqual(len(kept), 2)
-        self.assertEqual([e['established'] for e in kept], [False, True])
+        # CLOSE->SYN_SENT, SYN_SENT->ESTABLISHED, ESTABLISHED->FIN_WAIT1.
+        # CLOSING->CLOSE and FIN_WAIT1->CLOSING prove nothing new and are dropped.
+        self.assertEqual([e['kind'] for e in kept],
+                         ['dial', 'established', 'established'])
 
     def test_a_comm_the_kernel_could_not_name_still_yields_its_pid(self):
         self.assertEqual(self.events()[0]['pid'], 2974095)
@@ -947,34 +972,34 @@ class FtraceLedger(unittest.TestCase):
         self.assertEqual([(p['ip'], p['port'], p['established'])
                           for p in artifact['peers']],
                          [('104.20.23.154', 443, True)])
-        self.assertEqual(artifact['established_from_softirq'], 1)
+        self.assertEqual(artifact['destinations_confirmed'], 1)
 
-    def test_a_handshake_for_a_destination_we_never_dialled_is_ignored(self):
-        # pid 0 carries the whole device's traffic. Accepting it wholesale would
-        # hand the target every connection any app on the phone completed.
+    def test_a_confirmation_for_a_destination_we_never_dialled_is_ignored(self):
+        # An inbound connection reaches ESTABLISHED too. Accepting its teardown
+        # as a destination would turn an open port into outbound traffic.
         led = self.ledger()
-        stray = {'ip': '9.9.9.9', 'port': 443, 'proto': 'tcp',
-                 'established': True, 'pid': 0, 'comm': '<idle>'}
+        stray = {'ip': '9.9.9.9', 'port': 443, 'proto': 'tcp', 'kind': 'established',
+                 'established': True, 'pid': 4321, 'comm': 'app'}
         self.assertFalse(led.note(stray))
         self.assertEqual(led.artifact()['peers'], [])
 
     def test_an_attempt_that_is_never_completed_stays_an_attempt(self):
         led = self.ledger()
-        led.note({'ip': '5.5.5.5', 'port': 8080, 'proto': 'tcp',
+        led.note({'ip': '5.5.5.5', 'port': 8080, 'proto': 'tcp', 'kind': 'dial',
                   'established': False, 'pid': 1234, 'comm': 'app'})
         self.assertEqual(led.artifact()['peers'],
                          [{'ip': '5.5.5.5', 'port': 8080, 'proto': 'tcp',
                            'established': False}])
 
-    def test_the_same_handshake_is_not_counted_twice(self):
+    def test_the_same_connection_is_not_confirmed_twice(self):
         led = self.ledger()
-        dial = {'ip': '1.2.3.4', 'port': 443, 'proto': 'tcp',
+        dial = {'ip': '1.2.3.4', 'port': 443, 'proto': 'tcp', 'kind': 'dial',
                 'established': False, 'pid': 99, 'comm': 'app'}
-        done = dict(dial, established=True, pid=0, comm='<idle>')
+        done = dict(dial, kind='established', established=True)
         led.note(dial)
         led.note(done)
         led.note(done)
-        self.assertEqual(led.artifact()['established_from_softirq'], 1)
+        self.assertEqual(led.artifact()['destinations_confirmed'], 1)
 
     def test_nothing_at_all_is_reported_as_such_not_as_success(self):
         artifact = self.ledger().artifact()
@@ -990,3 +1015,25 @@ class FtraceLedger(unittest.TestCase):
 
     def test_the_artifact_states_what_the_source_cannot_see(self):
         self.assertEqual(self.ledger().artifact()['covers'], 'tcp')
+
+
+class FtraceFixedPids(unittest.TestCase):
+    """An explicit pid list means the uid is not consulted at all — the case
+    where the uid is 0 and resolving it would point the filter at the device."""
+
+    def test_a_fixed_list_is_used_verbatim(self):
+        stream = sockstack.FtraceSocketEvents(serial=None, pids=[4242])
+        stream.root = '/sys/kernel/tracing'
+        written = []
+        stream._write_filter = lambda: written.append(list(stream.pids))
+        stream._refresh_pids()
+        self.assertEqual(written, [[4242]])
+
+    def test_a_fixed_list_is_not_rewritten_every_refresh(self):
+        stream = sockstack.FtraceSocketEvents(serial=None, pids=[4242])
+        stream.root = '/sys/kernel/tracing'
+        written = []
+        stream._write_filter = lambda: written.append(list(stream.pids))
+        stream._refresh_pids()
+        stream._refresh_pids()
+        self.assertEqual(len(written), 1)

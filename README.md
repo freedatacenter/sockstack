@@ -288,8 +288,13 @@ Read these before trusting an empty result.
   events rather than not at all. Root, and nothing else — no eBPF toolchain, no
   BTF, no compiler. **TCP only**: UDP has no state machine, so datagram
   destinations still come from polling alone and this source's silence about
-  them means nothing. The summary names how many destinations the poll missed,
-  which is the measurement worth having before reaching for anything heavier.
+  them means nothing. The summary names how many destinations the poll missed.
+
+  How large is the gap? Measured on the Android 14 emulator — eight
+  destinations, one 0.3-second connection each, from an ordinary uid — the
+  stream saw 8, the poll saw 1. Polling looks far better than that against
+  root-owned traffic, but only because a closed socket is orphaned to uid 0 and
+  lingers in `/proc/net`; an app's uid has no such afterglow.
   What it does not do is attribute: the kernel knows pid, comm and uid, never
   `com.target.SyncWorker.run`. Attribution stays with the tracer, and no
   kernel-side source will change that.

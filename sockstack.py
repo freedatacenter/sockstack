@@ -663,6 +663,13 @@ PROC_NET_READ = ' ; '.join(
 # — arrives here as two events. It needs root and nothing else: no eBPF
 # toolchain, no BTF, no kernel headers, no compiler.
 #
+# Measured on the Android 14 emulator: eight destinations, one 0.3-second
+# connection each, from a process owned by an ordinary uid. The event stream saw
+# 8 of 8; the two-second poll saw 1 of 8. Polling looks better than that against
+# root-owned traffic, but only as an artifact — a closed socket is orphaned to
+# uid 0, so /proc/net keeps showing it under root long after the process is gone.
+# An app has no such afterglow.
+#
 # What it does NOT do is attribute. The kernel knows pid, comm and uid; it does
 # not know `com.target.SyncWorker.run`, and no amount of kernel-side tracing will
 # produce a Java frame. This is a second source for *what happened*, and the
@@ -683,14 +690,22 @@ FTRACE_LINE = re.compile(
 
 
 def parse_ftrace_socket_event(line):
-    """One `trace_pipe` line -> a peer the target reached out to, or None.
+    """One `trace_pipe` line -> what it says about a socket, or None.
 
-    Only outbound connections are kept, and they are recognised by where the
-    socket came *from*: CLOSE→SYN_SENT is a connect() being attempted, and
-    SYN_SENT→ESTABLISHED is the far end answering it. An inbound accept walks
-    LISTEN→SYN_RECV→ESTABLISHED, whose "peer" is whoever dialled in — counting
-    that as somewhere the target went would invent outbound traffic out of an
-    open port.
+    Two kinds are useful, and they are not the same claim:
+
+    `dial` — CLOSE→SYN_SENT, a connect() being attempted by the task the event
+    is recorded against. This is the only kind that may introduce a destination:
+    an inbound connection starts LISTEN→SYN_RECV, so it never produces one, and
+    the target's open port cannot be turned into somewhere the target went.
+
+    `established` — evidence that a handshake completed. SYN_SENT→ESTABLISHED is
+    the obvious form, but it is recorded wherever the SYN-ACK happened to be
+    processed, which is not the connecting task and on some kernels not even
+    `<idle>`. Any later transition *out of* ESTABLISHED carries the same proof
+    and is recorded against the task that owns the socket, which is the one we
+    are filtering on. Verified on the Android 14 emulator: the first form never
+    arrived and the second always did.
     """
     match = FTRACE_LINE.match(line or '')
     if not match:
@@ -698,10 +713,12 @@ def parse_ftrace_socket_event(line):
     fields = dict(pair.split('=', 1) for pair in match.group('fields').split()
                   if '=' in pair)
     old, new = fields.get('oldstate', ''), fields.get('newstate', '')
-    if new == 'TCP_SYN_SENT':
-        established = False
+    if old == 'TCP_CLOSE' and new == 'TCP_SYN_SENT':
+        kind, established = 'dial', False
     elif new == 'TCP_ESTABLISHED' and old == 'TCP_SYN_SENT':
-        established = True
+        kind, established = 'established', True
+    elif old == 'TCP_ESTABLISHED':
+        kind, established = 'established', True
     else:
         return None
     # For AF_INET6 the tracepoint leaves daddr as 0.0.0.0 and puts the address in
@@ -719,7 +736,8 @@ def parse_ftrace_socket_event(line):
         return None
     if not ip or not port or ip in ('0.0.0.0', '::'):
         return None
-    return {'ip': ip, 'port': port, 'proto': 'tcp', 'established': established,
+    return {'ip': ip, 'port': port, 'proto': 'tcp', 'kind': kind,
+            'established': established,
             'pid': int(match.group('pid')), 'comm': match.group('comm').strip()}
 
 
@@ -751,9 +769,13 @@ class FtraceSocketEvents:
     as "the target opened no connections".
     """
 
-    def __init__(self, serial, uid=None, pid_hint=None, interval=5):
+    def __init__(self, serial, uid=None, pid_hint=None, interval=5, pids=None):
         self.serial = serial
         self.uid = uid
+        # An explicit list means "trace exactly these and do not go looking":
+        # useful when the pid is known and the uid resolves to half the device,
+        # which is what attaching to a root process does.
+        self.fixed_pids = list(pids) if pids else None
         self.pid_hint = pid_hint or (lambda: None)
         self.interval = interval
         self.root = None
@@ -761,7 +783,7 @@ class FtraceSocketEvents:
         self.detail = ''
         self.lines_seen = 0
         self.events = 0
-        self.softirq_upgrades = 0
+        self.confirmed = 0
         self.pids = []
         self._dialled = set()
         self._peers = {}
@@ -840,6 +862,11 @@ class FtraceSocketEvents:
 
     def _refresh_pids(self):
         """Keep the event filter pointed at every process of the target's uid."""
+        if self.fixed_pids is not None:
+            if self.pids != self.fixed_pids:
+                self.pids = list(self.fixed_pids)
+                self._write_filter()
+            return
         if self.uid is None:
             self.uid = uid_from_pid(self.serial, self.pid_hint() or 0) \
                 if self.pid_hint() else None
@@ -853,17 +880,20 @@ class FtraceSocketEvents:
         if not pids or pids == self.pids:
             return
         self.pids = sorted(pids)
+        self._write_filter()
+
+    def _write_filter(self):
         instance = f'{self.root}/instances/{FTRACE_INSTANCE}'
-        # pid 0 rides along on purpose. Verified on a live kernel: the
-        # CLOSE→SYN_SENT transition is recorded against the connecting task, but
-        # SYN_SENT→ESTABLISHED happens when the SYN-ACK is processed in softirq
-        # context, which ftrace attributes to `<idle>-0`. Filter it out and this
-        # source can never observe a connection succeeding — every destination
-        # would be reported as merely attempted. What comes in through pid 0 is
-        # the whole device's, so `note()` keeps only the destinations a target
-        # pid was already seen dialling.
+        # Only the target's pids. An earlier version also filtered in pid 0, to
+        # catch the SYN_SENT→ESTABLISHED transition that the kernel records
+        # wherever the SYN-ACK lands rather than against the connecting task —
+        # but on the Android 14 emulator that event never arrived at all, and
+        # letting the whole device's softirq traffic in bought nothing but the
+        # risk of borrowing another process's handshake. Establishment is read
+        # instead from transitions *out of* ESTABLISHED, which are recorded
+        # against the socket's owner and so arrive under this filter.
         priv(self.serial,
-             f'echo "0 {" ".join(str(p) for p in self.pids)}" > '
+             f'echo "{" ".join(str(p) for p in self.pids)}" > '
              f'{instance}/set_event_pid')
 
     def _refresh_loop(self):
@@ -876,32 +906,26 @@ class FtraceSocketEvents:
     def note(self, event):
         """Take one parsed event into the ledger. True if it counted.
 
-        Two kinds arrive. An event on one of the target's pids is the target
-        dialling, and is taken at face value. An event on pid 0 is the kernel
-        finishing somebody's handshake in softirq context — it carries no
-        attribution at all, so it is used only to upgrade a destination this
-        target was already seen dialling, and never to add one.
-
-        The imprecision that remains: another process connecting to the same
-        address and port inside the same window can lend its handshake to ours.
-        That can turn "attempted" into "established" for a destination already
-        known to be the target's; it cannot invent a destination.
+        A `dial` introduces a destination; anything else may only confirm one.
+        The asymmetry is the whole precision argument: every event here is
+        already restricted to the target's own pids by the kernel, but a socket
+        the target merely *accepted* would otherwise enter as a destination it
+        reached out to, and an inbound connection is not an outbound one.
         """
         if not event:
             return False
         key = (event['ip'], event['port'], event['proto'])
-        if event['pid'] in (0, None):
-            with self._lock:
-                if key not in self._dialled or not event['established']:
-                    return False
-                if not self._peers.get(key):
-                    self._peers[key] = True
-                    self.softirq_upgrades += 1
-            return True
         with self._lock:
-            self._dialled.add(key)
-            self._peers[key] = self._peers.get(key, False) or event['established']
-        return True
+            if event.get('kind') == 'dial':
+                self._dialled.add(key)
+                self._peers.setdefault(key, False)
+                return True
+            if key not in self._dialled:
+                return False        # confirmation of something we never saw dialled
+            if not self._peers.get(key):
+                self._peers[key] = True
+                self.confirmed += 1
+            return True
 
     def _read(self):
         stream = self._process.stdout if self._process else None
@@ -932,12 +956,12 @@ class FtraceSocketEvents:
             'pids_filtered': self.pids,
             'lines_seen': self.lines_seen,
             'events_parsed': self.events,
-            'established_from_softirq': self.softirq_upgrades,
-            'caveat': ('a connection is marked established only when the kernel '
-                       'was seen completing its handshake; that transition is '
-                       'recorded in softirq context with no owning pid, so it is '
-                       'matched back by address and port and could in principle '
-                       'borrow another process\'s handshake to the same peer'),
+            'destinations_confirmed': self.confirmed,
+            'caveat': ('a destination is introduced only by a connect() recorded '
+                       'against one of the filtered pids, and marked established '
+                       'only by a later transition of that same socket out of '
+                       'ESTABLISHED; a connection still open when the run ended '
+                       'is therefore reported as attempted'),
             'peers': [{'ip': ip, 'port': port, 'proto': proto,
                        'established': established}
                       for (ip, port, proto), established in sorted(peers.items())],

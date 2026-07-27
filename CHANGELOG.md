@@ -22,21 +22,37 @@ which source saw it, and the summary reports how many destinations polling
 missed. That number is the point of the prototype: it says whether the gap is
 worth closing with something heavier.
 
-Found while building it, on a live kernel rather than from documentation: the
-connect transition is recorded against the calling task, but the handshake
-completing is recorded against `<idle>-0`, in softirq context. A pid filter — the
-only thing keeping this from collecting the whole device — therefore hides every
-successful connection and leaves nothing but attempts. `set_event_pid` accepts
-`0`, which brings the handshakes back device-wide, so they are used only to
-upgrade destinations one of the target's own pids was already seen dialling. The
-imprecision that leaves is stated in the artifact: a concurrent connection to the
-same address and port can lend its handshake to the target's, promoting
-"attempted" to "established" — it cannot invent a destination. `docs/GOTCHAS.md`
-carries the capture this came from.
+**Measured on the Android 14 emulator**, since a source like this is only worth
+having if the gap it closes is real: eight destinations, one 0.3-second
+connection each, from a process owned by an ordinary uid. The event stream saw
+8 of 8 and confirmed 5 of them established; the two-second poll saw 1 of 8.
 
-**Not yet run against a device.** The parser is tested against verbatim kernel
-output; the plumbing around it — tracefs discovery under SELinux, the pid filter,
-the teardown — has not been exercised on Android.
+The same run says something about the poller that was not known before: against
+*root-owned* traffic it appears to catch 7 of 8, but that is an afterglow, not a
+sighting. A closed socket is orphaned to uid 0 and its `/proc/net` row lingers,
+so a check filtering on uid 0 keeps finding traffic whose process is gone. An
+app's uid has no such afterglow, which is the case the tool actually runs in.
+
+Two findings from the device, both of which changed the design rather than the
+documentation:
+
+- The connect transition is recorded against the calling task, but the handshake
+  completing is recorded wherever the SYN-ACK landed — on desktop Linux
+  `<idle>-0`, and on the emulator it never arrives at all. Establishment is
+  therefore read from any later transition *out of* `ESTABLISHED`, which is
+  recorded against the socket's own task and so survives a pid filter. The cost
+  is stated in the artifact: a connection still open when the run ends is
+  reported as attempted.
+- Because of that, the filter no longer needs pid 0 in it. Nothing device-wide is
+  collected, and the earlier caveat about borrowing another process's handshake
+  is gone with it.
+
+Verified on the device: tracefs discovery under SELinux **enforcing**, the uid →
+`ps` → `set_event_pid` path, and teardown — the instance removed, the tracepoint
+switched off, no reader left running. Not verified: a real app's traffic. Nothing
+installed on the stand made a new TCP connection during a run — a fact the
+unfiltered capture confirmed rather than assumed — so the chain has been proven
+end to end for a process, not yet for an app.
 
 ### Added — an optional web front-end (`ui/`)
 

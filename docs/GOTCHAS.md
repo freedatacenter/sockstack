@@ -338,18 +338,37 @@ ftrace attributes it to whatever the CPU was doing, which is nothing. Filter
 whole device, and every destination is reported as *attempted* and none as
 *established*.
 
-Two more details from the same capture, both of which break the obvious fixes:
+The connect event also carries `sport=0` — the source port is not assigned yet —
+so the two cannot be correlated by their source port either.
 
-- the connect event carries `sport=0` — the source port is not assigned yet — so
-  the two events cannot be correlated by their source port;
-- `set_event_pid` does accept `0`, and with it in the list the handshake events
-  arrive. They arrive for the whole device, so they are only usable to upgrade a
-  destination one of the target's own pids was already seen dialling.
+`set_event_pid` does accept `0`, which brings the handshakes back. That looked
+like the fix until the same experiment ran on the Android 14 emulator, where the
+`SYN_SENT→ESTABLISHED` event **never arrives at all**, with or without pid 0 in
+the filter. What does arrive, on the socket's own task and so under any sane
+filter, is every later transition *out of* `ESTABLISHED`:
 
-That last is what sockstack does, and it is imprecise in one stated direction: a
-second process connecting to the same address and port in the same window can
-lend its handshake to the target's. It can promote "attempted" to "established";
-it cannot invent a destination.
+```
+nc-14965 [001] ..... inet_sock_set_state: ... oldstate=TCP_ESTABLISHED newstate=TCP_FIN_WAIT1
+```
+
+A socket cannot leave `ESTABLISHED` without having been there, so that is the
+proof, it belongs to the right process, and it needs no device-wide collection.
+sockstack reads establishment from it. The cost is stated in the artifact: a
+connection still open when the run ends never leaves `ESTABLISHED`, so it is
+reported as attempted.
+
+## Polling flatters itself against root-owned traffic
+
+Comparing the poller with the event stream, using a process owned by an ordinary
+uid: eight destinations, one 0.3-second connection each. The stream saw 8, the
+poll saw 1.
+
+Run the same generator as root and the poll appears to catch 7 of 8 — which is
+not the poller improving. A closed socket is orphaned and its `/proc/net` row is
+attributed to **uid 0**, so root-owned traffic leaves an afterglow in the table
+long after the process is gone, and a check filtering on uid 0 keeps finding it.
+An app's uid has no such afterglow. Measure a sampling check against a real app's
+uid, or the number it gives you is its own.
 
 ## `adb connect` exits 0 when it fails
 
