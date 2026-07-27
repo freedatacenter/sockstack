@@ -159,6 +159,24 @@
   .ok { color: var(--accent); } .warnc { color: var(--warn); } .badc { color: var(--bad); }
   .cursor { display: inline-block; width: 8px; height: 14px; background: var(--accent);
             vertical-align: -2px; margin-left: 4px; animation: blink 1.1s step-end infinite; }
+  .tab { cursor: pointer; color: var(--faint); padding-bottom: 3px;
+         border-bottom: 2px solid transparent; }
+  .tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+  #traffic { background: #0b0c0e; border: 1px solid var(--hair); border-radius: 10px;
+             padding: 14px 16px; height: 190px; overflow: auto; }
+  #traffic.tall { height: 46vh; }
+  .req { font: 500 12px/1.6 var(--mono); color: var(--mid); padding: 3px 0;
+         word-break: break-all; }
+  .req .badge { margin-right: 8px; }
+  .req.other { color: var(--faint); }
+  .body-head { font: 600 11px/1 var(--mono); color: var(--dim); margin: 14px 0 6px;
+               letter-spacing: .04em; }
+  .body-text { font: 400 11px/1.6 var(--mono); color: #a4a8af; white-space: pre-wrap;
+               word-break: break-word; background: #0f1013; border: 1px solid var(--hair);
+               border-radius: 8px; padding: 10px 12px; max-height: 260px; overflow: auto; }
+  .caveat { font-size: 11px; line-height: 1.6; color: var(--warn); margin: 0 0 10px; }
+  .sites { cursor: pointer; border-radius: 8px; padding: 2px 6px; margin: 0 -6px; }
+  .sites:hover { background: rgba(127,196,160,.08); }
   .status { font-size: 12px; color: var(--dim); margin-top: 10px; min-height: 17px; }
   .status.bad { color: var(--warn); }
   label.field { display: block; font-size: 11px; color: var(--dim); margin-bottom: 5px; }
@@ -340,12 +358,16 @@
   </div>
 
   <div class="logstrip">
-    <div style="display:flex;justify-content:space-between;margin-bottom:10px">
-      <span class="cap" data-i18n="card.log"></span>
+    <div style="display:flex;justify-content:space-between;margin-bottom:10px;gap:12px">
+      <div style="display:flex;gap:16px">
+        <span class="cap tab on" id="tabLog" data-i18n="card.log"></span>
+        <span class="cap tab" id="tabTraffic" data-i18n="card.traffic"></span>
+      </div>
       <span class="mono" style="font-size:11px;color:var(--faint);cursor:pointer"
             id="expandLog"></span>
     </div>
     <div id="log"></div>
+    <div id="traffic" class="hidden"></div>
   </div>
 </div>
 
@@ -396,6 +418,27 @@ const STRINGS = {
     'card.screen': 'Screen',
     'card.attribution': 'Call-stack attribution',
     'card.log': 'Log',
+    'card.traffic': 'Traffic',
+    'traffic.open': 'show what went to this address',
+    'traffic.loading': 'reading the capture for',
+    'traffic.caveat': 'Traffic to $1. The tracer keeps no payload, so this is what ' +
+                      'went to that address — not proof that this call site is what ' +
+                      'sent it. Where several call sites share a destination, they ' +
+                      'cannot be told apart here.',
+    'traffic.noRequests': 'No HTTP requests to this address in the capture.',
+    'traffic.noBodies': 'No decrypted bodies for this address.',
+    'traffic.body': 'body',
+    'traffic.chars': 'chars',
+    'traffic.encrypted': 'This address is in the capture, but its TLS was never ' +
+                         'decrypted — no keys were captured for it. The app speaks ' +
+                         'to it past the libraries friTap hooks, often its own ' +
+                         'protocol on a raw socket. The emptiness above is missing ' +
+                         'keys, not missing traffic.',
+    'traffic.absent': 'Nothing for this address in the capture at all — the tracer ' +
+                      'saw the socket, the capture did not see the packets.',
+    'traffic.truncated': 'Shown in part — the full text is in the run directory.',
+    'traffic.fragmented': 'Bodies came from DATA frames rather than reassembled ' +
+                          'messages, so some may start mid-token.',
     'install.why': 'Optional: if the app is already on the device, move on. The ' +
                    'reason to install from here is the package name — it is read ' +
                    'from the difference in <span class="mono">pm list packages</span> ' +
@@ -497,6 +540,27 @@ const STRINGS = {
     'card.screen': 'Экран',
     'card.attribution': 'Атрибуция вызовов',
     'card.log': 'Журнал',
+    'card.traffic': 'Трафик',
+    'traffic.open': 'показать, что ушло на этот адрес',
+    'traffic.loading': 'читаю захват для',
+    'traffic.caveat': 'Трафик на $1. Трейсер не хранит полезную нагрузку, поэтому ' +
+                      'это то, что ушло на данный адрес, — а не доказательство, что ' +
+                      'отправила именно эта точка вызова. Если на адрес ходят ' +
+                      'несколько точек, различить их здесь нечем.',
+    'traffic.noRequests': 'HTTP-запросов на этот адрес в захвате нет.',
+    'traffic.noBodies': 'Расшифрованных тел для этого адреса нет.',
+    'traffic.body': 'тело',
+    'traffic.chars': 'симв.',
+    'traffic.encrypted': 'Этот адрес в захвате есть, но его TLS не расшифрован — ' +
+                         'ключей для этого соединения не перехвачено. Приложение ' +
+                         'говорит с ним мимо библиотек, которые цепляет friTap, ' +
+                         'часто своим протоколом по голому сокету. Пустота выше — ' +
+                         'это отсутствие ключей, а не отсутствие трафика.',
+    'traffic.absent': 'Для этого адреса в захвате нет ничего — трейсер видел сокет, ' +
+                      'а захват пакетов его не увидел.',
+    'traffic.truncated': 'Показано частично — полный текст лежит в каталоге прогона.',
+    'traffic.fragmented': 'Тела собраны из DATA-фреймов, а не из пересобранных ' +
+                          'сообщений, поэтому часть может начинаться с середины.',
     'install.why': 'Шаг необязательный: если приложение уже на устройстве, идите ' +
                    'дальше. Ставить отсюда стоит ради имени пакета — оно берётся ' +
                    'из разницы <span class="mono">pm list packages</span> до и ' +
@@ -775,7 +839,7 @@ async function loadFindings() {
       const via = s.via ? `<div class="via">via ${esc(s.via)}</div>` : '';
       return app + via;
     }).join('<div style="height:6px"></div>');
-    return `<div class="peer ${card.tone}">
+    return `<div class="peer ${card.tone}" data-peer="${esc(card.peer)}">
       <div class="head">
         <span class="addr">${esc(card.peer)}</span>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -784,10 +848,56 @@ async function loadFindings() {
           <span class="badge ${card.tone}">${esc(card.kind)}</span>
         </div>
       </div>
-      ${frames ? `<div class="frames">${frames}</div>` : ''}
+      ${frames ? `<div class="frames sites" title="${t('traffic.open')}">${frames}</div>`
+               : ''}
       <div class="note">${esc(card.note || card.label)}</div>
     </div>`;
   }).join('') || `<div class="empty">${t('findings.noPeers')}</div>`);
+  // A call site is a way into the traffic: click it and the strip below shows
+  // what went to the address it reached.
+  box.querySelectorAll('.peer').forEach(card => {
+    const sites = card.querySelector('.sites');
+    if (sites) sites.onclick = () => loadTraffic(card.dataset.peer);
+  });
+}
+
+// ---- what went to that address --------------------------------------------
+async function loadTraffic(peer) {
+  trafficLoaded = true;
+  showStrip('traffic');
+  const box = $('traffic');
+  box.innerHTML = `<div class="empty">${t('traffic.loading')} ${esc(peer)}…</div>`;
+  const data = await get('/api/traffic?dir=' + encodeURIComponent($('output').value) +
+                         '&peer=' + encodeURIComponent(peer));
+  if (!data.ok) { box.innerHTML = `<div class="empty">${esc(data.error)}</div>`; return; }
+  // Said plainly, every time: this is traffic to that address. The tracer keeps
+  // no payload, so nothing here proves which call site sent which body.
+  const caveat = `<p class="caveat">${t('traffic.caveat', esc(peer))}</p>`;
+  const requests = (data.requests || []).map(r =>
+    `<div class="req ${r.target ? '' : 'other'}">
+       <span class="badge ${r.target ? 'good' : 'unknown'}">${r.proto}</span>${esc(r.label)}
+     </div>`).join('') || `<div class="empty">${t('traffic.noRequests')}</div>`;
+  const bodies = (data.bodies || []).map((b, i) =>
+    `<div class="body-head">${t('traffic.body')} ${i + 1} · ${b.chars} ${t('traffic.chars')}
+       · ${esc(b.ip)}</div>
+     <div class="body-text">${esc(b.text)}</div>`).join('');
+  const notes = [];
+  // "We could not read it" must never render as "it sent nothing".
+  if (data.state === 'encrypted') notes.push(t('traffic.encrypted'));
+  if (data.state === 'absent') notes.push(t('traffic.absent'));
+  if (data.truncated) notes.push(t('traffic.truncated'));
+  if (data.fragmented) notes.push(t('traffic.fragmented'));
+  box.innerHTML = caveat + requests +
+    (bodies || `<div class="empty" style="margin-top:12px">${t('traffic.noBodies')}</div>`) +
+    (notes.length ? `<p class="caveat" style="margin-top:12px">${notes.join(' ')}</p>` : '');
+}
+
+function showStrip(which) {
+  const traffic = which === 'traffic';
+  $('log').classList.toggle('hidden', traffic);
+  $('traffic').classList.toggle('hidden', !traffic);
+  $('tabLog').classList.toggle('on', !traffic);
+  $('tabTraffic').classList.toggle('on', traffic);
 }
 
 // ---- recent runs ----------------------------------------------------------
@@ -818,6 +928,7 @@ async function loadRuns() {
 // ---- run control ----------------------------------------------------------
 let since = 0;
 let RUN_RUNNING = false;
+let trafficLoaded = false;
 function paint(line) {
   const cls = line.startsWith('[+]') ? 'ok' : line.startsWith('[!]') ? 'badc'
             : line.startsWith('[i]') || line.startsWith('[·]') ? 'warnc' : '';
@@ -1035,8 +1146,11 @@ $('toggleTargets').onclick = () => {
 };
 $('expandLog').onclick = () => {
   const tall = $('log').classList.toggle('tall');
+  $('traffic').classList.toggle('tall', tall);
   $('expandLog').textContent = t(tall ? 'act.collapse' : 'act.expand');
 };
+$('tabLog').onclick = () => showStrip('log');
+$('tabTraffic').onclick = () => { showStrip('traffic'); if (!trafficLoaded) loadTraffic(''); };
 document.querySelectorAll('[data-lang-switch]').forEach(node => node.onclick = () => {
   LANG = LANG === 'en' ? 'ru' : 'en';
   applyLang();

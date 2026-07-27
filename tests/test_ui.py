@@ -375,3 +375,84 @@ class AdbServerLabel(unittest.TestCase):
         os.environ['ANDROID_ADB_SERVER_PORT'] = '5038'
         os.environ['ADB_SERVER_SOCKET'] = 'tcp:10.0.0.9:5037'
         self.assertEqual(server.adb_server_label(), 'tcp:10.0.0.9:5037')
+
+
+# --------------------------------------------------------------------------- traffic view
+
+class PeerAddress(unittest.TestCase):
+    def test_an_ordinary_peer(self):
+        self.assertEqual(server.peer_address('1.2.3.4:443'), '1.2.3.4')
+
+    def test_ipv6_keeps_its_colons(self):
+        self.assertEqual(server.peer_address('[2606:4700::1111]:443'),
+                         '2606:4700::1111')
+
+    def test_an_address_with_no_port(self):
+        self.assertEqual(server.peer_address('1.2.3.4'), '1.2.3.4')
+
+    def test_nothing(self):
+        self.assertEqual(server.peer_address(''), '')
+        self.assertEqual(server.peer_address(None), '')
+
+
+class StreamState(unittest.TestCase):
+    """Read it, saw it and could not read it, never saw it. The middle one is
+    the whole point: an app speaking its own protocol over a raw socket leaves
+    TLS records nobody has keys for, and drawing that as an empty request list
+    says "it sent nothing" — the opposite of what happened."""
+
+    def setUp(self):
+        self.calls = []
+        self.saved = server.sockstack.tshark_fields
+
+    def tearDown(self):
+        server.sockstack.tshark_fields = self.saved
+
+    def fake(self, rows, err=None):
+        def fields(path, flt, *names):
+            self.calls.append(flt)
+            return rows, err
+        server.sockstack.tshark_fields = fields
+
+    def test_http_that_was_read_is_decrypted(self):
+        self.fake([])
+        self.assertEqual(server.stream_state('a.pcap', 'b.pcapng', '1.2.3.4', True),
+                         'decrypted')
+        self.assertEqual(self.calls, [])      # no need to ask
+
+    def test_tls_with_no_readable_inside_is_not_silence(self):
+        self.fake(['1', '2'])
+        with tempfile.NamedTemporaryFile(suffix='.pcapng') as fh:
+            self.assertEqual(server.stream_state('', fh.name, '1.2.3.4', False),
+                             'encrypted')
+
+    def test_a_peer_absent_from_the_capture_says_so(self):
+        self.fake([])
+        with tempfile.NamedTemporaryFile(suffix='.pcapng') as fh:
+            self.assertEqual(server.stream_state('', fh.name, '1.2.3.4', False),
+                             'absent')
+
+    def test_a_broken_tshark_claims_nothing(self):
+        # An error is not an answer; saying "absent" here would be a finding
+        # invented out of a missing tool.
+        self.fake([], 'tshark not installed')
+        with tempfile.NamedTemporaryFile(suffix='.pcapng') as fh:
+            self.assertEqual(server.stream_state('', fh.name, '1.2.3.4', False), '')
+
+    def test_ipv6_uses_the_right_filter_field(self):
+        self.fake([])
+        with tempfile.NamedTemporaryFile(suffix='.pcapng') as fh:
+            server.stream_state('', fh.name, '2606:4700::1111', False)
+        self.assertTrue(self.calls[0].startswith('ipv6.addr'), self.calls)
+
+
+class TrafficView(unittest.TestCase):
+    def test_a_directory_with_no_capture_is_explained_not_blank(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = server.traffic_view(tmp)
+            self.assertFalse(got['ok'])
+            self.assertIn('no capture', got['error'])
+
+    def test_a_missing_directory_is_not_a_crash(self):
+        self.assertFalse(server.traffic_view('/nonexistent/dir')['ok'])
+        self.assertFalse(server.traffic_view('')['ok'])

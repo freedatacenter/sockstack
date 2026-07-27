@@ -1064,6 +1064,98 @@ def split_row(row, count):
     return parts[:count]
 
 
+# Where a decrypted body can come from, in order of preference. Reassembled
+# messages are whole; a DATA-frame row is a fragment that starts mid-token, so
+# the fallback is marked as such rather than passed off as a complete payload.
+BODY_SOURCES = (('enc', 'http2.body.reassembled.data', False),
+                ('enc', 'http2.data.data', True),
+                ('pcap', 'http.file_data', False),
+                ('enc', 'http.file_data', False))
+
+
+def collect_bodies(pcap, enc, collect=None):
+    """[(destination_ip, body_text)], plus whether any of it is fragmented.
+
+    One definition of "where a body comes from", used by the written report and
+    by the panel. The destination rides along because a body nobody can place is
+    evidence you cannot act on — the capture is device-wide, and the address is
+    what ties a payload to the process that was traced.
+    """
+    if collect is None:
+        def collect(path, flt, *fields):
+            return tshark_fields(path, flt, *fields)[0]
+
+    paths = {'pcap': pcap, 'enc': enc}
+    rows, fragmented, reassembled_found = [], False, False
+    for source, field, is_fragment in BODY_SOURCES:
+        if is_fragment and reassembled_found:
+            continue           # whole messages were available; do not mix in parts
+        got = collect(paths[source], field, 'ip.dst', 'ipv6.dst', field)
+        if got and not is_fragment and field.startswith('http2.body'):
+            reassembled_found = True
+        if got and is_fragment:
+            fragmented = True
+        rows += got
+
+    seen, bodies = set(), []
+    for row in rows:
+        ip4, ip6, hexline = split_row(row, 3)
+        try:
+            raw = binascii.unhexlify(hexline.strip().replace(':', ''))
+        except binascii.Error:
+            continue
+        if not raw:
+            continue
+        fingerprint = hashlib.sha256(raw).hexdigest()
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        bodies.append((first_addr(ip4, ip6), raw.decode('utf-8', 'replace')))
+    bodies.sort(key=lambda pair: body_rank(pair[1]))
+    return bodies, fragmented
+
+
+def http_exchanges(pcap, enc, target_ips, collect=None):
+    """{label: seen_going_to_the_target} for HTTP/1 and HTTP/2 requests.
+
+    Module-level so the web panel renders the same requests the written report
+    lists. A second extraction would drift, and the two would disagree about
+    which host the target actually asked for — the one thing both exist to say.
+
+    `collect` is injected so the caller keeps its own error accounting: an empty
+    result and a broken tshark must not look alike to either of them.
+    """
+    if collect is None:
+        def collect(path, flt, *fields):
+            return tshark_fields(path, flt, *fields)[0]
+
+    def rows(path, flt, *fields):
+        out = {}
+        for row in collect(path, flt, *(fields + ('ip.dst', 'ipv6.dst'))):
+            cols = split_row(row, len(fields) + 2)
+            label = ' '.join(part for part in cols[:len(fields)] if part)
+            if not label:
+                continue
+            address = first_addr(cols[-2], cols[-1])
+            entry = out.setdefault(label, {'target': False, 'ips': []})
+            entry['target'] = entry['target'] or address in target_ips
+            if address and address not in entry['ips']:
+                entry['ips'].append(address)
+        return out
+
+    http1 = rows(pcap, 'http.request', 'http.host',
+                 'http.request.method', 'http.request.uri')
+    for label, entry in rows(enc, 'http.request', 'http.host',
+                             'http.request.method',
+                             'http.request.uri').items():
+        merged = http1.setdefault(label, {'target': False, 'ips': []})
+        merged['target'] = merged['target'] or entry['target']
+        merged['ips'] += [ip for ip in entry['ips'] if ip not in merged['ips']]
+    http2 = rows(enc, 'http2.headers', 'http2.headers.authority',
+                 'http2.headers.method', 'http2.headers.path')
+    return http1, http2
+
+
 def first_addr(*candidates):
     for value in candidates:
         if value:
@@ -1177,42 +1269,13 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
     dns_target = {name for name in dns
                   if name_to_ips.get(name, set()) & target_ips}
 
-    def http_rows(path, flt, *fields):
-        out = {}
-        for row in collect(path, flt, *(fields + ('ip.dst', 'ipv6.dst'))):
-            cols = split_row(row, len(fields) + 2)
-            label = ' '.join(part for part in cols[:len(fields)] if part)
-            if not label:
-                continue
-            out[label] = out.get(label, False) or \
-                first_addr(cols[-2], cols[-1]) in target_ips
-        return out
+    http1, http2 = http_exchanges(pcap, enc, target_ips, collect)
 
-    http1 = http_rows(pcap, 'http.request', 'http.host',
-                      'http.request.method', 'http.request.uri')
-    for label, is_target in http_rows(enc, 'http.request', 'http.host',
-                                      'http.request.method',
-                                      'http.request.uri').items():
-        http1[label] = http1.get(label, False) or is_target
-    http2 = http_rows(enc, 'http2.headers', 'http2.headers.authority',
-                      'http2.headers.method', 'http2.headers.path')
-
-    # Reassembled bodies are whole messages; http2.data.data yields one row per
-    # DATA frame, so a body arrives as fragments that start mid-token. Prefer the
-    # former and say so when falling back, rather than presenting fragments as
-    # if they were complete payloads.
-    body_rows = collect(enc, 'http2.body.reassembled.data',
-                        'http2.body.reassembled.data')
-    fragmented = False
-    if not body_rows:
-        body_rows = collect(enc, 'http2.data.data', 'http2.data.data')
-        fragmented = bool(body_rows)
-    body_rows += collect(pcap, 'http.file_data', 'http.file_data')
-    body_rows += collect(enc, 'http.file_data', 'http.file_data')
+    placed_bodies, fragmented = collect_bodies(pcap, enc, collect)
+    bodies = [text for _, text in placed_bodies]
 
     stamp = run_stamp(out_dir, stamp)
     bodies_name = f'decrypted_bodies_{stamp}.txt'
-    bodies = extract_bodies(body_rows)
     bodies_path = None
     if bodies:
         bodies_path = os.path.join(out_dir, bodies_name)
@@ -1378,9 +1441,9 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
     lines += [f'- `{n}` — {c}{mark(n in sni_target)}'
               for n, c in sni.most_common()] or ['- (none)']
     lines += ['', '## HTTP/1 requests', '']
-    lines += [f'- `{r}`{mark(http1[r])}' for r in sorted(http1)] or ['- (none)']
+    lines += [f'- `{r}`{mark(http1[r]["target"])}' for r in sorted(http1)] or ['- (none)']
     lines += ['', '## HTTP/2 requests', '']
-    lines += [f'- `{r}`{mark(http2[r])}' for r in sorted(http2)] or ['- (none)']
+    lines += [f'- `{r}`{mark(http2[r]["target"])}' for r in sorted(http2)] or ['- (none)']
     lines += ['', '## Decrypted bodies', '']
     if bodies:
         shown = bodies[:MAX_BODIES_IN_SUMMARY]
