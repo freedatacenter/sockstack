@@ -41,6 +41,11 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+# The page renders peers and call sites, and it must reach the same conclusions
+# as the written report. The only way to guarantee that is to use the same code:
+# no second implementation to drift, no second definition of "attributed".
+import sockstack                                                      # noqa: E402
 SOCKSTACK = os.path.join(ROOT, 'sockstack.py')
 SETUP_DEVICE = os.path.join(ROOT, 'setup-device.sh')
 # Enough history that a long run stays readable, bounded so a chatty target
@@ -162,6 +167,107 @@ def parse_install_times(dumps):
         elif current and line.startswith('firstInstallTime='):
             times[current] = line.split('=', 1)[1].strip()
     return times
+
+
+# --------------------------------------------------------------------------- findings
+
+# What colour a peer earns, and why. Ranked from "the tool knows which code did
+# this" down to "the tool did not look" — the same ordering the report uses, for
+# the same reason: an unexamined destination must never look more settled than an
+# examined one. Nothing here encodes suspicion. The tool cannot tell a C2 from a
+# CDN, and a red badge that says otherwise would be exactly the confident wrong
+# answer this project spends its effort avoiding.
+PEER_KINDS = {
+    'app': ('names application code', 'good'),
+    'library': ('a stack, but only library frames', 'partial'),
+    'framework-only': ('a stack, but only framework frames', 'partial'),
+    'native-thread': ('no JVM on the calling thread', 'partial'),
+    'no-runtime': ('the process has no Java runtime', 'partial'),
+    'not-examined': ('never stack-walked — more callers may exist', 'unknown'),
+    'attribution-unavailable': ('the Java bridge was not working here', 'unknown'),
+    'unknown': ('no reason recorded — treat as unexamined', 'unknown'),
+    'kernel-only': ('the kernel saw it; the tracer has no record', 'unknown'),
+}
+
+
+def attribution_cards(out_dir):
+    """Peers with their call sites, classified for display.
+
+    Built from sockstack's own summary functions so the page cannot claim
+    something the report would not.
+    """
+    if not out_dir or not os.path.isdir(out_dir):
+        return {'ok': False, 'error': 'no such directory', 'cards': []}
+    records = sockstack._load_records(out_dir)
+    counts = sockstack._load_json(
+        os.path.join(out_dir, 'socket_trace_counts.json'), {}).get('counts')
+    peers, attribution, unattributed, partly = sockstack.summarize_trace(records, counts)
+    meta = sockstack._load_json(os.path.join(out_dir, 'socket_trace_meta.json'), {})
+    uid_blob = sockstack._load_json(os.path.join(out_dir, 'uid_sockets.json'), {})
+
+    grouped = {}
+    for item in attribution:
+        entry = grouped.setdefault(item['peer'], [])
+        entry.append({'app': item['app_frames'], 'via': item['via']})
+    cards = []
+    for peer, sites in sorted(grouped.items()):
+        kind = 'app' if any(s['app'] for s in sites) else 'library'
+        cards.append({'peer': peer, 'kind': kind, 'sites': sites,
+                      'note': 'attributed, but not exhaustively — the stack-walk '
+                              'budget ran out' if peer in partly else ''})
+    for reason, addresses in (unattributed or {}).items():
+        for peer in addresses:
+            cards.append({'peer': peer, 'kind': reason, 'sites': [], 'note': ''})
+
+    seen = {card['peer'] for card in cards}
+    for entry in uid_blob.get('peers', []):
+        peer = sockstack.format_peer(entry.get('ip'), entry.get('port'))
+        if peer not in seen and entry.get('ip'):
+            cards.append({'peer': peer, 'kind': 'kernel-only', 'sites': [],
+                          'note': '' if entry.get('established', True)
+                                  else 'attempted, never established'})
+
+    for card in cards:
+        label, tone = PEER_KINDS.get(card['kind'], PEER_KINDS['unknown'])
+        card['label'], card['tone'] = label, tone
+        card['ops'] = sum(v for k, v in peers.items() if k.startswith(card['peer'] + ' '))
+
+    sources = {}
+    for rec in records:
+        key = rec.get('stack_source') or 'unknown'
+        sources[key] = sources.get(key, 0) + 1
+    return {'ok': True, 'cards': cards, 'records': len(records), 'sources': sources,
+            'bridge': meta.get('java_bridge'), 'runtime': meta.get('android_runtime'),
+            'cross_check': {k: v for k, v in uid_blob.items() if k != 'peers'}}
+
+
+def recent_runs(root):
+    """Runs found under `root`, newest first, described by what they recorded.
+
+    Deliberately no verdict. "Clean" is not something a run can report: nothing
+    found and nothing working look the same from here, and only the manifest can
+    say which it was.
+    """
+    runs = []
+    if not root or not os.path.isdir(root):
+        return runs
+    for name in os.listdir(root):
+        directory = os.path.join(root, name)
+        manifest = os.path.join(directory, 'run_manifest.json')
+        if not os.path.isfile(manifest):
+            continue
+        blob = sockstack._load_json(manifest, {})
+        summary = attribution_cards(directory)
+        runs.append({
+            'dir': directory, 'name': name,
+            'target': blob.get('target', name), 'mode': blob.get('mode', ''),
+            'started': (blob.get('started_utc') or '')[:16].replace('T', ' '),
+            'records': blob.get('records', summary.get('records', 0)),
+            'sites': sum(len(c['sites']) for c in summary.get('cards', [])),
+            'bridge': summary.get('bridge'),
+        })
+    runs.sort(key=lambda r: r['started'], reverse=True)
+    return runs[:12]
 
 
 # --------------------------------------------------------------------------- the run
@@ -292,6 +398,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self._elements(serial))
             if url.path == '/api/log':
                 return self._send(200, RUN.tail(int(query.get('since') or 0)))
+            if url.path == '/api/deviceinfo':
+                return self._send(200, self._device_info(serial))
+            if url.path == '/api/attribution':
+                return self._send(200, attribution_cards(query.get('dir') or ''))
+            if url.path == '/api/runs':
+                return self._send(200, {'runs': recent_runs(
+                    query.get('root') or os.getcwd())})
             if url.path == '/api/report':
                 return self._send(200, self._report(query.get('dir') or ''))
             return self._send(404, {'error': 'no such endpoint'})
@@ -334,6 +447,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {'error': f'{type(exc).__name__}: {exc}'})
 
     # -- endpoint bodies ---------------------------------------------------
+    def _device_info(self, serial):
+        ok, props = adb(serial, 'shell',
+                        'getprop ro.build.version.release ; '
+                        'getprop ro.product.cpu.abi ; '
+                        'getprop ro.build.type ; '
+                        'pidof frida-server')
+        lines = [line.strip() for line in (props or '').splitlines()]
+        while len(lines) < 4:
+            lines.append('')
+        return {'ok': ok, 'release': lines[0], 'abi': lines[1],
+                'build': lines[2], 'frida': bool(lines[3])}
+
     def _packages(self, serial):
         ok, listing = adb(serial, 'shell', 'pm list packages -3 -U')
         if not ok:

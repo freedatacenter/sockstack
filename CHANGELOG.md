@@ -4,6 +4,28 @@
 
 ### Added — an optional web front-end (`ui/`)
 
+Reworked to a hi-fi design: a launch screen that picks the device, and a
+"cockpit" workspace where the device mirror sits beside the findings and the log
+runs along the bottom. Attribution gets the room, because attribution is the
+product.
+
+The findings panel is built by calling sockstack's own `summarize_trace`, not by
+re-deriving anything — there is no second implementation to drift from the
+written report. Peer colour encodes **how well the tool knows who opened the
+socket**: green when the stack names application code, neutral for library-only
+and native threads, amber for anything unexamined or where the Java bridge was
+unavailable. It deliberately does not encode suspicion. The tool cannot tell a
+C2 from a CDN, and a red badge claiming otherwise would be the confident wrong
+answer this project spends its effort removing; a test asserts the vocabulary
+contains no verdict words at all.
+
+For the same reason recent runs are described by what they recorded — call
+sites, records, whether the bridge worked — and never as "clean". Nothing found
+and nothing working look identical from the outside.
+
+Fonts are the system stack rather than a webfont CDN: a forensic console should
+not phone home when a page opens, and on an isolated host it would not render.
+
 Standard library only, so the CLI gains no dependencies and anyone uninterested
 in a browser loses nothing. It runs the same `sockstack.py` commands into the
 same output directories; nothing it does is unavailable without it.

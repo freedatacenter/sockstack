@@ -127,3 +127,73 @@ class ParseUiElements(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+import json      # noqa: E402
+import tempfile  # noqa: E402
+
+
+def frame(text):
+    return {'str': text, 'class': text.split('(')[0]}
+
+
+class AttributionCards(unittest.TestCase):
+    """The colour a peer gets is a claim. It says how well the tool knows who
+    opened the socket — never how suspicious the address looks, which the tool
+    has no way to judge and which an analyst must not be nudged towards."""
+
+    def cards(self, records, uid=None):
+        out = tempfile.mkdtemp()
+        with open(os.path.join(out, 'socket_trace.json'), 'w') as fh:
+            json.dump(records, fh)
+        if uid is not None:
+            with open(os.path.join(out, 'uid_sockets.json'), 'w') as fh:
+                json.dump(uid, fh)
+        return {c['peer']: c for c in server.attribution_cards(out)['cards']}
+
+    @staticmethod
+    def record(ip, port, source='java', stack=None):
+        return {'peer_ip': ip, 'peer_port': port, 'socket_event_type': 'connect',
+                'stack_source': source, 'stack': stack or []}
+
+    def test_a_stack_naming_application_code_reads_as_known(self):
+        found = self.cards([self.record('203.0.113.9', 443, stack=[
+            frame('com.example.Beacon.ping(Beacon.java:8)')])])
+        self.assertEqual(found['203.0.113.9:443']['kind'], 'app')
+        self.assertEqual(found['203.0.113.9:443']['tone'], 'good')
+
+    def test_a_library_only_stack_is_not_dressed_up_as_known(self):
+        found = self.cards([self.record('203.0.113.9', 443, stack=[
+            frame('okhttp3.internal.Http.send(Http.kt:1)')])])
+        self.assertEqual(found['203.0.113.9:443']['tone'], 'partial')
+
+    def test_an_unexamined_peer_is_flagged_louder_than_a_native_one(self):
+        """"We did not look" must not look calmer than "we looked and it was
+        native" — the report ranks them that way and so must the page."""
+        found = self.cards([self.record('203.0.113.9', 443, source='not-walked'),
+                            self.record('203.0.113.10', 443, source='native-thread')])
+        self.assertEqual(found['203.0.113.9:443']['tone'], 'unknown')
+        self.assertEqual(found['203.0.113.10:443']['tone'], 'partial')
+
+    def test_a_broken_bridge_is_not_reported_as_native(self):
+        found = self.cards([self.record('203.0.113.9', 443, source='no-bridge')])
+        self.assertEqual(found['203.0.113.9:443']['kind'], 'attribution-unavailable')
+        self.assertEqual(found['203.0.113.9:443']['tone'], 'unknown')
+
+    def test_a_kernel_only_destination_appears_and_says_so(self):
+        found = self.cards(
+            [self.record('203.0.113.9', 443, stack=[frame('com.example.A.go(A.java:1)')])],
+            uid={'uid': 10192, 'status': 'ok', 'peers': [
+                {'ip': '203.0.113.50', 'port': 8443, 'proto': 'tcp', 'established': True}]})
+        self.assertIn('203.0.113.50:8443', found)
+        self.assertEqual(found['203.0.113.50:8443']['kind'], 'kernel-only')
+        self.assertEqual(found['203.0.113.50:8443']['tone'], 'unknown')
+
+    def test_no_kind_carries_a_verdict_about_the_address(self):
+        """Nothing in the vocabulary should imply malice: the tool cannot tell a
+        C2 from a CDN, and a red badge saying otherwise is a wrong answer stated
+        confidently."""
+        vocabulary = ' '.join(server.PEER_KINDS) + ' ' + \
+                     ' '.join(label for label, _ in server.PEER_KINDS.values())
+        for word in ('c2', 'malicious', 'suspicious', 'threat', 'clean', 'safe'):
+            self.assertNotIn(word, vocabulary.lower())

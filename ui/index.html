@@ -5,353 +5,582 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sockstack</title>
 <style>
+  /* Dark only, deliberately: this is a console that sits open next to a
+     terminal, and the palette matches the CLI's own output. Fonts are the
+     system stack — a forensic tool should not call out to a font CDN when a
+     page opens, and on an isolated analysis host it would simply not render. */
   :root {
-    --bg: #fbfbfa; --panel: #fff; --ink: #1a1a19; --dim: #6b6b68;
-    --line: #e0e0dc; --accent: #2f6f4f; --warn: #a04a1e; --code: #f4f4f1;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #16171a; --panel: #1d1f23; --ink: #e6e6e3; --dim: #9a9a96;
-      --line: #33363c; --accent: #7fc4a0; --warn: #e0975f; --code: #131417;
-    }
+    --bg: #0d0e11; --panel: #141519; --raised: #1a1c21; --sunken: #0f1013;
+    --line: #2b2e34; --hair: #23262b;
+    --ink: #e6e6e3; --mid: #d5d6d2; --dim: #8b8f96; --faint: #6f747c;
+    --accent: #7fc4a0; --warn: #e0975f; --bad: #e08a7a;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, sans-serif;
-  }
-  header {
-    padding: 14px 20px; border-bottom: 1px solid var(--line);
-    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
-  }
-  header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
-  header .note { color: var(--dim); font-size: 12px; }
-  main { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(300px, 420px); gap: 18px; padding: 18px 20px; align-items: start; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--dim); margin: 0 0 10px; font-weight: 600; }
-  label { display: block; font-size: 12px; color: var(--dim); margin: 8px 0 3px; }
-  input, select, button, textarea {
-    font: inherit; color: var(--ink); background: var(--bg);
-    border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; width: 100%;
-  }
-  button { background: var(--panel); cursor: pointer; width: auto; }
-  button:hover { border-color: var(--accent); }
-  button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
-  button:disabled { opacity: .45; cursor: default; }
-  .row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
-  .row > * { flex: 1 1 120px; }
-  .row > button { flex: 0 0 auto; }
-  .checks { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
-  .checks label { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--ink); font-size: 13px; }
-  .checks input { width: auto; }
-  #log {
-    background: var(--code); border: 1px solid var(--line); border-radius: 6px;
-    padding: 10px 12px; height: 320px; overflow: auto; white-space: pre-wrap;
-    font: 12px/1.55 ui-monospace, monospace; word-break: break-word;
-  }
-  .stage { position: relative; display: inline-block; line-height: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-  .stage img { display: block; width: 100%; height: auto; }
-  .hit { position: absolute; border: 1px solid rgba(127,196,160,.75); background: rgba(127,196,160,.10); cursor: pointer; }
-  .hit:hover { background: rgba(127,196,160,.28); }
-  .hit span {
-    position: absolute; left: 0; top: -17px; font: 10px/1.4 ui-monospace, monospace;
-    background: var(--accent); color: var(--bg); padding: 0 4px; border-radius: 3px; white-space: nowrap;
-  }
-  .status { font-size: 12px; color: var(--dim); margin-top: 8px; min-height: 18px; }
-  .status.warn { color: var(--warn); }
-  .pkg { font: 12px/1.5 ui-monospace, monospace; }
-  .muted { color: var(--dim); font-size: 12px; }
-  #report { max-height: 420px; overflow: auto; white-space: pre-wrap; font: 12px/1.55 ui-monospace, monospace; background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         -webkit-font-smoothing: antialiased; }
+  button, input, select { font: inherit; color: var(--ink); }
+  .mono { font-family: var(--mono); }
+  .cap { font: 600 11px/1 var(--mono); letter-spacing: .14em;
+         text-transform: uppercase; color: var(--dim); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+  @keyframes blink { 0%,55% { opacity: 1 } 56%,100% { opacity: 0 } }
+
+  /* ---- chrome ---- */
+  .bar { display: flex; align-items: center; gap: 12px; padding: 13px 22px;
+         border-bottom: 1px solid var(--hair); background: #111216; flex-wrap: wrap; }
+  .logo { width: 20px; height: 20px; border-radius: 5px; background: var(--accent);
+          display: flex; align-items: center; justify-content: center; flex: none; }
+  .logo i { width: 7px; height: 7px; background: var(--bg); display: block; }
+  .brand { font: 600 14px/1 var(--mono); }
+  .sep { width: 1px; height: 20px; background: var(--line); }
+  .grow { flex: 1; }
+  .chip { display: flex; align-items: center; gap: 8px; background: var(--raised);
+          border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px;
+          font: 500 12px/1 var(--mono); color: var(--mid); }
+  select.chip { padding-right: 26px; appearance: none; cursor: pointer; max-width: 260px; }
+  input.chip { width: 110px; }
+  .pill { display: flex; align-items: center; gap: 8px; font: 600 12px/1 var(--mono);
+          padding: 8px 13px; border-radius: 20px; border: 1px solid var(--line);
+          color: var(--dim); background: var(--raised); }
+  .pill.live { color: var(--accent); border-color: var(--accent);
+               background: rgba(127,196,160,.08); }
+  .pill.live .dot { animation: pulse 1.4s ease-in-out infinite; }
+  .btn { cursor: pointer; background: var(--raised); border: 1px solid var(--line);
+         color: var(--mid); font-weight: 500; padding: 11px 18px; border-radius: 9px; }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: var(--bg); border: none; font-weight: 600; }
+  .btn:disabled { opacity: .4; cursor: default; border-color: var(--line); }
+  .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer;
+            font: 500 12px/1 var(--mono); color: var(--mid); }
+  .toggle input { display: none; }
+  .toggle i { width: 30px; height: 18px; border-radius: 18px; background: var(--line);
+              position: relative; flex: none; transition: background .12s; }
+  .toggle i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px;
+                     height: 14px; border-radius: 50%; background: var(--faint);
+                     transition: all .12s; }
+  .toggle input:checked + i { background: var(--accent); }
+  .toggle input:checked + i::after { left: 14px; background: var(--bg); }
+
+  /* ---- launch ---- */
+  .launch { max-width: 1180px; margin: 0 auto; padding: 34px 40px 60px; }
+  .launch h2 { margin: 0 0 8px; font-size: 26px; font-weight: 600; letter-spacing: -.01em; }
+  .launch p.sub { margin: 0 0 30px; font-size: 14px; color: var(--dim); }
+  .cols { display: grid; grid-template-columns: 1.35fr 1fr; gap: 24px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .card { background: var(--raised); border: 1px solid var(--line);
+          border-radius: 12px; padding: 20px; }
+  .device { display: flex; align-items: center; gap: 14px; padding: 15px 16px;
+            border: 1px solid var(--line); border-radius: 10px; background: #15171b;
+            margin-bottom: 10px; cursor: pointer; }
+  .device.on { border-color: var(--accent); background: rgba(127,196,160,.07); }
+  .device.off { cursor: not-allowed; opacity: .9; }
+  .device .icon { width: 38px; height: 38px; border-radius: 9px; background: var(--sunken);
+                  border: 1px solid var(--line); display: flex; align-items: center;
+                  justify-content: center; font-size: 18px; flex: none; }
+  .device .name { font: 600 14px/1.2 var(--mono); }
+  .device .meta { font-size: 12px; color: var(--dim); margin-top: 4px; }
+  .state { font: 600 11px/1 var(--mono); letter-spacing: .04em; display: flex;
+           align-items: center; gap: 6px; }
+  .run-item { padding: 12px 13px; border: 1px solid var(--line); border-radius: 9px;
+              background: #15171b; cursor: pointer; margin-bottom: 10px; }
+  .run-item:hover { border-color: var(--accent); }
+  .run-item .t { font: 600 12px/1.3 var(--mono); color: var(--mid);
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-item .b { display: flex; justify-content: space-between; margin-top: 6px;
+                 font: 500 11px/1 var(--mono); color: var(--faint); }
+
+  /* ---- workspace ---- */
+  .work { display: grid; grid-template-columns: 340px 1fr; }
+  @media (max-width: 1000px) { .work { grid-template-columns: 1fr; } }
+  .mirror { padding: 24px; border-right: 1px solid var(--hair); }
+  .phone { position: relative; width: 292px; margin: 0 auto; border: 8px solid var(--line);
+           border-radius: 26px; overflow: hidden; background: #000; line-height: 0; }
+  .phone img { display: block; width: 100%; height: auto; }
+  .phone .blank { aspect-ratio: 9/19; display: flex; align-items: center;
+                  justify-content: center; font: 500 11px/1.6 var(--mono);
+                  color: var(--faint); text-align: center; padding: 0 20px;
+                  background: repeating-linear-gradient(135deg,#16181c 0 11px,#191b20 11px 22px); }
+  .hit { position: absolute; border: 1.5px solid var(--accent);
+         background: rgba(127,196,160,.12); border-radius: 6px; cursor: pointer; }
+  .hit:hover { background: rgba(127,196,160,.3); }
+  .hit span { position: absolute; left: 0; top: -16px; font: 600 9px/1.3 var(--mono);
+              background: var(--accent); color: var(--bg); padding: 2px 5px;
+              border-radius: 3px; white-space: nowrap; }
+  .keys { display: flex; gap: 8px; margin-top: 16px; }
+  .keys button { flex: 1; font: 500 12px/1 var(--mono); padding: 10px; }
+  .hint { margin: 12px 0 0; font-size: 11px; line-height: 1.5; color: var(--faint); }
+
+  .findings { padding: 24px; min-width: 0; }
+  .peer { border: 1px solid var(--line); border-radius: 11px; overflow: hidden;
+          background: var(--sunken); margin-bottom: 12px; }
+  .peer.good { border-color: rgba(127,196,160,.4); background: rgba(127,196,160,.04); }
+  .peer.unknown { border-color: rgba(224,151,95,.4); }
+  .peer .head { display: flex; align-items: center; justify-content: space-between;
+                gap: 12px; padding: 13px 16px; flex-wrap: wrap; }
+  .peer.good .head { background: rgba(127,196,160,.06); }
+  .peer .addr { font: 600 14px/1 var(--mono); color: var(--mid); }
+  .peer.good .addr { color: var(--accent); }
+  .badge { font: 600 10px/1 var(--mono); padding: 4px 7px; border-radius: 5px;
+           border: 1px solid var(--line); color: var(--dim); background: var(--raised); }
+  .badge.good { color: var(--accent); border-color: rgba(127,196,160,.4);
+                background: rgba(127,196,160,.1); }
+  .badge.unknown { color: var(--warn); border-color: rgba(224,151,95,.4);
+                   background: rgba(224,151,95,.1); }
+  .frames { padding: 12px 16px; font: 400 11px/1.85 var(--mono); }
+  .frames .via { color: var(--faint); padding-left: 14px; }
+  .frames .src { color: var(--faint); }
+  .note { padding: 0 16px 13px; font: 400 11px/1.6 var(--mono); color: var(--faint); }
+  .empty { color: var(--faint); font: 400 12px/1.7 var(--mono); }
+
+  .logstrip { border-top: 1px solid var(--hair); padding: 16px 22px 20px; background: #101116; }
+  #log { background: #0b0c0e; border: 1px solid var(--hair); border-radius: 10px;
+         padding: 14px 16px; font: 400 12px/1.75 var(--mono); color: #a4a8af;
+         height: 190px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+  #log.tall { height: 46vh; }
+  .ok { color: var(--accent); } .warnc { color: var(--warn); } .badc { color: var(--bad); }
+  .cursor { display: inline-block; width: 8px; height: 14px; background: var(--accent);
+            vertical-align: -2px; margin-left: 4px; animation: blink 1.1s step-end infinite; }
+  .status { font-size: 12px; color: var(--dim); margin-top: 10px; min-height: 17px; }
+  .status.bad { color: var(--warn); }
+  label.field { display: block; font-size: 11px; color: var(--dim); margin-bottom: 5px; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
-<header>
-  <h1>sockstack</h1>
-  <span class="note">which code path sent this — pick a device, drive the app, watch the run</span>
-</header>
 
-<main>
-<div>
-  <section>
-    <h2>Device</h2>
-    <div class="row">
-      <div style="flex:1 1 220px">
-        <label for="device">attached</label>
-        <select id="device"></select>
-      </div>
-      <button id="refreshDevices">rescan</button>
-      <button id="setup">provision</button>
-    </div>
-    <div class="status" id="deviceStatus"></div>
-  </section>
+<!-- ============================ launch ============================ -->
+<div id="launchView">
+  <div class="bar">
+    <div class="logo"><i></i></div>
+    <span class="brand">sockstack</span>
+    <span style="font-size:13px;color:var(--faint)">which code path sent this?</span>
+    <div class="grow"></div>
+    <span class="pill" id="bindPill">🔒 loopback</span>
+  </div>
 
-  <section>
-    <h2>Target</h2>
-    <div class="row">
-      <div style="flex:1 1 260px">
-        <label for="apk">APK on this host (optional — installs, then names itself)</label>
-        <input id="apk" placeholder="/path/to/target.apk">
-      </div>
-      <button id="install">install</button>
-    </div>
-    <div class="row" style="margin-top:6px">
-      <div style="flex:1 1 260px">
-        <label for="package">package (newest install first)</label>
-        <select id="package" class="pkg"></select>
-      </div>
-      <button id="refreshPackages">reload</button>
-      <button id="launch">launch</button>
-    </div>
-    <div class="status" id="targetStatus"></div>
-  </section>
+  <div class="launch">
+    <h2>Выберите устройство, чтобы начать</h2>
+    <p class="sub">sockstack сам поднимет frida-server и запустит захват. Управление
+      целью — через зеркало экрана.</p>
 
-  <section>
-    <h2>Run</h2>
-    <div class="row">
-      <div style="flex:2 1 220px">
-        <label for="output">output directory</label>
-        <input id="output" placeholder="./run">
+    <div class="cols">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;margin-bottom:14px">
+          <span class="cap">Устройства · Attached</span>
+          <span class="mono" style="font-size:12px;color:var(--faint);cursor:pointer"
+                id="rescan">↻ rescan</span>
+        </div>
+        <div id="deviceList"></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:16px;
+                    padding-top:16px;border-top:1px solid var(--hair)">
+          <span class="mono" id="fridaState" style="font-size:12px;color:var(--dim)"></span>
+          <span style="color:#3a3d43">·</span>
+          <span class="mono" id="provision"
+                style="font-size:12px;color:var(--dim);cursor:pointer">provision device</span>
+        </div>
       </div>
-      <div style="flex:0 1 110px">
-        <label for="duration">seconds</label>
-        <input id="duration" type="number" value="200" min="10">
-      </div>
-    </div>
-    <div class="checks">
-      <label><input type="checkbox" id="attach"> attach (no launcher activity)</label>
-      <label><input type="checkbox" id="antiRoot"> anti-root</label>
-      <label><input type="checkbox" id="postOnly"> post-process only</label>
-    </div>
-    <div class="row" style="margin-top:12px">
-      <button class="primary" id="start">start run</button>
-      <button id="stop" disabled>finish early</button>
-      <button id="loadReport">open report</button>
-    </div>
-    <div class="status" id="runStatus"></div>
-  </section>
 
-  <section>
-    <h2>Log</h2>
+      <div class="card">
+        <div class="cap" style="margin-bottom:14px">Последние запуски · Recent</div>
+        <div style="margin-bottom:10px">
+          <label class="field" for="runsRoot">directory to scan</label>
+          <input class="chip" id="runsRoot" style="width:100%" placeholder=".">
+        </div>
+        <div id="runList"></div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:14px;margin-top:26px;flex-wrap:wrap">
+      <button class="btn primary" id="openWorkspace">Открыть рабочий стол →</button>
+      <div class="grow"></div>
+      <span style="font-size:12px;color:var(--faint);max-width:300px;text-align:right;
+                   line-height:1.5">
+        Без аутентификации · управляет устройством. Наружу — только через SSH-туннель.
+      </span>
+    </div>
+    <div class="status" id="launchStatus"></div>
+  </div>
+</div>
+
+<!-- ============================ workspace ============================ -->
+<div id="workView" class="hidden">
+  <div class="bar">
+    <div class="logo"><i></i></div>
+    <span class="brand" id="backToLaunch" style="cursor:pointer">sockstack</span>
+    <select class="chip" id="device"></select>
+    <select class="chip" id="package"></select>
+    <input class="chip" id="output" placeholder="./run" title="output directory">
+    <input class="chip" id="duration" type="number" value="200" style="width:88px"
+           title="seconds">
+    <label class="toggle"><input type="checkbox" id="attach"><i></i>attach</label>
+    <label class="toggle"><input type="checkbox" id="antiRoot"><i></i>anti-root</label>
+    <div class="grow"></div>
+    <span class="pill" id="statusPill"><span class="dot"
+          style="background:var(--dim)"></span><span id="statusText">idle</span></span>
+    <button class="btn primary" id="start">▶ start run</button>
+    <button class="btn" id="stop" disabled>■ finish early</button>
+  </div>
+
+  <div class="work">
+    <div class="mirror">
+      <div style="display:flex;justify-content:space-between;margin-bottom:14px">
+        <span class="cap">Экран · Screen</span>
+        <span class="mono" id="toggleTargets"
+              style="font-size:11px;color:var(--accent);cursor:pointer">show targets</span>
+      </div>
+      <div class="phone" id="stage">
+        <img id="screen" alt="" hidden>
+        <div class="blank" id="noScreen">no screen yet — pick a device</div>
+        <div id="overlay"></div>
+      </div>
+      <div class="keys">
+        <button class="btn" id="back">◀ back</button>
+        <button class="btn" id="home">● home</button>
+        <button class="btn" id="refreshScreen">↻</button>
+      </div>
+      <p class="hint">Клик по кадру — тап. Рамки — clickable-узлы иерархии: жмёте
+        кнопку по её resource-id, а не пиксель.</p>
+      <div style="margin-top:18px">
+        <label class="field" for="apk">APK to install</label>
+        <div style="display:flex;gap:8px">
+          <input class="chip" id="apk" style="flex:1" placeholder="/path/to/target.apk">
+          <button class="btn" id="install">install</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn" id="launchApp" style="flex:1">launch target</button>
+          <button class="btn" id="reloadPkgs">↻ pkgs</button>
+        </div>
+      </div>
+      <div class="status" id="deviceStatus"></div>
+    </div>
+
+    <div class="findings">
+      <div style="display:flex;justify-content:space-between;margin-bottom:14px;
+                  gap:10px;flex-wrap:wrap">
+        <span class="cap">Атрибуция вызовов · Call-stack attribution</span>
+        <div style="display:flex;gap:6px" id="findingCounts"></div>
+      </div>
+      <div id="peers"><div class="empty">No findings loaded. Start a run, or open a
+        directory from the launch screen.</div></div>
+    </div>
+  </div>
+
+  <div class="logstrip">
+    <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+      <span class="cap">Журнал · Log</span>
+      <span class="mono" style="font-size:11px;color:var(--faint);cursor:pointer"
+            id="expandLog">expand</span>
+    </div>
     <div id="log"></div>
-  </section>
-
-  <section id="reportBox" hidden>
-    <h2>Report</h2>
-    <div class="muted" id="reportName"></div>
-    <div id="report"></div>
-  </section>
+  </div>
 </div>
-
-<div>
-  <section>
-    <h2>Screen</h2>
-    <div class="row" style="margin-bottom:10px">
-      <button id="refreshScreen">refresh</button>
-      <button id="showHits">show tap targets</button>
-      <button id="back">back</button>
-      <button id="home">home</button>
-    </div>
-    <div class="stage" id="stage">
-      <img id="screen" alt="device screen">
-      <div id="overlay"></div>
-    </div>
-    <div class="status" id="screenStatus">
-      Click anywhere on the screen to tap it. “Show tap targets” outlines what the
-      view hierarchy says is clickable — clicking one taps its centre, which is
-      steadier than aiming at a pixel.
-    </div>
-  </section>
-</div>
-</main>
 
 <script>
 const $ = id => document.getElementById(id);
-const post = (path, body) => fetch(path, {
-  method: 'POST', headers: {'Content-Type': 'application/json'},
-  body: JSON.stringify(body || {})
-}).then(r => r.json());
-const get = path => fetch(path).then(r => r.json());
-const device = () => $('device').value;
-
-function say(el, text, warn) {
-  const node = $(el);
-  node.textContent = text || '';
-  node.className = 'status' + (warn ? ' warn' : '');
+const post = (p, b) => fetch(p, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify(b || {})}).then(r => r.json());
+const get = p => fetch(p).then(r => r.json());
+const dev = () => $('device').value;
+const esc = t => String(t == null ? '' : t).replace(/[&<>]/g,
+  c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+function say(id, text, bad) {
+  const n = $(id); n.textContent = text || ''; n.className = 'status' + (bad ? ' bad' : '');
 }
 
-// -- devices ---------------------------------------------------------------
+// ---- devices --------------------------------------------------------------
+let devices = [];
 async function loadDevices() {
   const data = await get('/api/devices');
+  devices = data.devices || [];
+  const list = $('deviceList');
+  list.innerHTML = '';
   const select = $('device');
   const previous = select.value;
   select.innerHTML = '';
-  (data.devices || []).forEach(d => {
-    const option = document.createElement('option');
-    option.value = d.serial;
-    option.textContent = d.serial + (d.model ? ` — ${d.model}` : '') +
-                         (d.state === 'device' ? '' : `  [${d.state}]`);
-    option.disabled = d.state !== 'device';
-    select.appendChild(option);
+  if (!devices.length) {
+    list.innerHTML = '<div class="empty">Nothing attached. Check the cable, or ' +
+                     '<span class="mono">adb start-server</span>.</div>';
+  }
+  devices.forEach(d => {
+    const ready = d.state === 'device';
+    const row = document.createElement('div');
+    row.className = 'device' + (ready ? '' : ' off');
+    row.innerHTML =
+      `<div class="icon">${ready ? '📱' : '⛔'}</div>
+       <div style="flex:1;min-width:0">
+         <div class="name">${esc(d.serial)}${d.model ? ' · ' + esc(d.model) : ''}</div>
+         <div class="meta" data-meta="${esc(d.serial)}">${ready ? '…' :
+           'accept the authorisation prompt on the device'}</div>
+       </div>
+       <span class="state" style="color:${ready ? 'var(--accent)' : 'var(--warn)'}">
+         ${ready ? '<span class="dot" style="background:var(--accent)"></span>READY'
+                 : d.state.toUpperCase()}</span>`;
+    if (ready) {
+      row.onclick = () => { select.value = d.serial; markSelected(); onDeviceChange(); };
+    }
+    list.appendChild(row);
+    if (ready) {
+      const option = document.createElement('option');
+      option.value = d.serial;
+      option.textContent = d.serial + (d.model ? ' · ' + d.model : '');
+      select.appendChild(option);
+    }
   });
-  if (previous) select.value = previous;
-  const usable = (data.devices || []).filter(d => d.state === 'device').length;
-  say('deviceStatus',
-      data.error ? data.error :
-      usable ? `${usable} device(s) ready` :
-      'no usable device — an unauthorized one needs the prompt accepted on screen',
-      !!data.error || !usable);
-  if (usable) { loadPackages(); refreshScreen(); }
+  if (previous && [...select.options].some(o => o.value === previous)) select.value = previous;
+  markSelected();
+  if (select.value) { onDeviceChange(); loadDeviceInfo(); }
+  say('launchStatus', data.error || '', !!data.error);
+}
+function markSelected() {
+  [...$('deviceList').children].forEach(row => {
+    const name = row.querySelector('.name');
+    row.classList.toggle('on', !!name && name.textContent.startsWith(dev()));
+  });
+}
+async function loadDeviceInfo() {
+  if (!dev()) return;
+  const info = await get('/api/deviceinfo?device=' + encodeURIComponent(dev()));
+  const meta = document.querySelector(`[data-meta="${CSS.escape(dev())}"]`);
+  if (meta && info.ok) {
+    meta.textContent = [info.release && 'Android ' + info.release, info.abi, info.build]
+      .filter(Boolean).join(' · ');
+  }
+  $('fridaState').innerHTML = info.frida
+    ? '<span class="dot" style="background:var(--accent)"></span> frida-server running'
+    : '<span class="dot" style="background:var(--warn)"></span> frida-server not running ' +
+      '— sockstack starts it on demand';
 }
 
-// -- packages --------------------------------------------------------------
+// ---- packages -------------------------------------------------------------
 async function loadPackages() {
-  if (!device()) return;
-  say('targetStatus', 'reading installed packages…');
-  const data = await get('/api/packages?device=' + encodeURIComponent(device()));
+  if (!dev()) return;
+  const data = await get('/api/packages?device=' + encodeURIComponent(dev()));
   const select = $('package');
   select.innerHTML = '';
   (data.packages || []).forEach(p => {
     const option = document.createElement('option');
     option.value = p.package;
-    option.textContent = p.package + (p.installed ? `   ${p.installed}` : '');
+    option.textContent = p.package + (p.installed ? '   ' + p.installed : '');
     select.appendChild(option);
   });
-  say('targetStatus', data.ok ? `${(data.packages || []).length} third-party package(s)`
-                              : (data.error || 'could not list packages'), !data.ok);
+  say('deviceStatus', data.ok ? `${(data.packages || []).length} third-party package(s)`
+                              : (data.error || ''), !data.ok);
 }
 
-// -- screen and tap targets ------------------------------------------------
-let hitsShown = false;
+// ---- screen ---------------------------------------------------------------
+let targetsOn = false;
 function refreshScreen() {
-  if (!device()) return;
-  $('screen').src = '/api/screen?device=' + encodeURIComponent(device()) + '&t=' + Date.now();
-  if (hitsShown) loadHits();
+  if (!dev()) return;
+  const image = $('screen');
+  image.onload = () => { image.hidden = false; $('noScreen').classList.add('hidden');
+                         if (targetsOn) loadTargets(); };
+  image.onerror = () => { image.hidden = true; $('noScreen').classList.remove('hidden');
+                          $('noScreen').textContent = 'screencap failed'; };
+  image.src = '/api/screen?device=' + encodeURIComponent(dev()) + '&t=' + Date.now();
 }
-
-$('screen').addEventListener('load', () => { if (hitsShown) loadHits(); });
-
-async function loadHits() {
+async function loadTargets() {
   const image = $('screen');
   if (!image.naturalWidth) return;
-  const data = await get('/api/elements?device=' + encodeURIComponent(device()));
+  const data = await get('/api/elements?device=' + encodeURIComponent(dev()));
   const overlay = $('overlay');
   overlay.innerHTML = '';
-  if (!data.ok) { say('screenStatus', data.error || 'no hierarchy', true); return; }
+  if (!data.ok) { say('deviceStatus', data.error, true); return; }
   const scale = image.clientWidth / image.naturalWidth;
   (data.elements || []).forEach(el => {
     const [x1, y1, x2, y2] = el.bounds;
     const box = document.createElement('div');
     box.className = 'hit';
-    box.style.left = (x1 * scale) + 'px';
-    box.style.top = (y1 * scale) + 'px';
-    box.style.width = ((x2 - x1) * scale) + 'px';
-    box.style.height = ((y2 - y1) * scale) + 'px';
+    box.style.cssText = `left:${x1 * scale}px;top:${y1 * scale}px;` +
+                        `width:${(x2 - x1) * scale}px;height:${(y2 - y1) * scale}px`;
     const name = el.id || el.text || el.desc || el.cls;
-    if (name) {
-      const tag = document.createElement('span');
-      tag.textContent = name.length > 34 ? name.slice(0, 33) + '…' : name;
-      box.appendChild(tag);
-    }
+    if (name) box.innerHTML = `<span>${esc(name.slice(0, 30))}</span>`;
     box.title = `${el.cls} ${el.id ? '#' + el.id : ''} ${el.text}`.trim();
-    box.onclick = event => {
-      event.stopPropagation();
-      tap(el.center[0], el.center[1], name);
-    };
+    box.onclick = e => { e.stopPropagation(); tap(el.center[0], el.center[1], name); };
     overlay.appendChild(box);
   });
-  say('screenStatus', `${(data.elements || []).length} clickable element(s)`);
+  say('deviceStatus', `${(data.elements || []).length} clickable element(s)`);
 }
-
 async function tap(x, y, what) {
-  await post('/api/tap', {device: device(), x, y});
-  say('screenStatus', what ? `tapped ${what}` : `tapped ${x},${y}`);
+  await post('/api/tap', {device: dev(), x, y});
+  say('deviceStatus', what ? 'tapped ' + what : `tapped ${x},${y}`);
   setTimeout(refreshScreen, 700);
 }
-
-$('stage').addEventListener('click', event => {
+$('stage').addEventListener('click', e => {
   const image = $('screen');
-  if (!image.naturalWidth) return;
+  if (!image.naturalWidth || image.hidden) return;
   const rect = image.getBoundingClientRect();
   const scale = image.naturalWidth / rect.width;
-  tap(Math.round((event.clientX - rect.left) * scale),
-      Math.round((event.clientY - rect.top) * scale));
+  tap(Math.round((e.clientX - rect.left) * scale),
+      Math.round((e.clientY - rect.top) * scale));
 });
 
-// -- run -------------------------------------------------------------------
+// ---- findings -------------------------------------------------------------
+async function loadFindings() {
+  const directory = $('output').value;
+  if (!directory) return;
+  const data = await get('/api/attribution?dir=' + encodeURIComponent(directory));
+  const box = $('peers');
+  const counts = $('findingCounts');
+  if (!data.ok) {
+    box.innerHTML = `<div class="empty">${esc(data.error || 'nothing here yet')}</div>`;
+    counts.innerHTML = ''; return;
+  }
+  const sites = (data.cards || []).reduce((n, c) => n + c.sites.length, 0);
+  counts.innerHTML =
+    `<span class="badge">${data.cards.length} peers</span>` +
+    `<span class="badge">${sites} call sites</span>` +
+    `<span class="badge">${data.records} records</span>` +
+    (data.bridge === false
+      ? '<span class="badge unknown">java bridge unavailable</span>' : '');
+  const cross = data.cross_check || {};
+  const crossLine = cross.status === 'ok'
+    ? `<div class="empty" style="margin-bottom:12px">Kernel cross-check on uid ` +
+      `${cross.uid}: ran, ${cross.polls_succeeded} poll(s).</div>`
+    : cross.status
+      ? `<div class="empty" style="margin-bottom:12px;color:var(--warn)">` +
+        `Kernel cross-check: ${esc(cross.status)} — its silence is not evidence.</div>`
+      : '';
+  box.innerHTML = crossLine + ((data.cards || []).map(card => {
+    const frames = card.sites.map(s => {
+      const app = (s.app || []).map(f =>
+        `<div>${esc(f).replace(/(\(.*\))$/, '<span class="src">$1</span>')}</div>`).join('');
+      const via = s.via ? `<div class="via">via ${esc(s.via)}</div>` : '';
+      return app + via;
+    }).join('<div style="height:6px"></div>');
+    return `<div class="peer ${card.tone}">
+      <div class="head">
+        <span class="addr">${esc(card.peer)}</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${card.ops ? `<span class="badge">${card.ops} ops</span>` : ''}
+          ${card.sites.length ? `<span class="badge good">${card.sites.length} call site(s)</span>` : ''}
+          <span class="badge ${card.tone}">${esc(card.kind)}</span>
+        </div>
+      </div>
+      ${frames ? `<div class="frames">${frames}</div>` : ''}
+      <div class="note">${esc(card.note || card.label)}</div>
+    </div>`;
+  }).join('') || '<div class="empty">No peers recorded.</div>');
+}
+
+// ---- recent runs ----------------------------------------------------------
+async function loadRuns() {
+  const root = $('runsRoot').value || '.';
+  const data = await get('/api/runs?root=' + encodeURIComponent(root));
+  const list = $('runList');
+  if (!(data.runs || []).length) {
+    list.innerHTML = '<div class="empty">No run directories here.</div>'; return;
+  }
+  list.innerHTML = data.runs.map(r => `
+    <div class="run-item" data-dir="${esc(r.dir)}">
+      <div class="t">${esc(r.target)}</div>
+      <div class="b">
+        <span>${esc(r.started)} · ${esc(r.mode)}</span>
+        <span style="color:${r.bridge === false ? 'var(--warn)' : 'var(--dim)'}">
+          ${r.bridge === false ? 'java bridge failed'
+                               : `${r.sites} call site(s) · ${r.records} records`}</span>
+      </div>
+    </div>`).join('');
+  [...list.children].forEach(node => node.onclick = () => {
+    $('output').value = node.dataset.dir;
+    showWorkspace(); loadFindings();
+  });
+}
+
+// ---- run control ----------------------------------------------------------
 let since = 0;
+function paint(line) {
+  const cls = line.startsWith('[+]') ? 'ok' : line.startsWith('[!]') ? 'badc'
+            : line.startsWith('[i]') || line.startsWith('[·]') ? 'warnc' : '';
+  return cls ? `<span class="${cls}">${esc(line)}</span>` : esc(line);
+}
 async function pollLog() {
   const data = await get('/api/log?since=' + since);
   if (data.lines && data.lines.length) {
     const log = $('log');
     const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-    log.textContent += (log.textContent ? '\n' : '') + data.lines.join('\n');
+    log.innerHTML += data.lines.map(paint).join('\n') + '\n';
     if (atBottom) log.scrollTop = log.scrollHeight;
     since = data.next;
   }
   $('stop').disabled = !data.running;
   $('start').disabled = !!data.running;
-  if (data.running) say('runStatus', `running — ${data.elapsed}s elapsed`);
-  setTimeout(pollLog, data.running ? 1000 : 2500);
+  const pill = $('statusPill');
+  pill.classList.toggle('live', !!data.running);
+  pill.querySelector('.dot').style.background =
+    data.running ? 'var(--accent)' : 'var(--dim)';
+  $('statusText').textContent = data.running ? `running · ${data.elapsed}s` : 'idle';
+  if (!data.running && data.output && data.output === $('output').value) loadFindings();
+  setTimeout(pollLog, data.running ? 1000 : 3000);
 }
 
 $('start').onclick = async () => {
-  $('log').textContent = ''; since = 0;
+  $('log').innerHTML = ''; since = 0;
   const data = await post('/api/run', {
-    device: device(), package: $('package').value, output: $('output').value,
+    device: dev(), package: $('package').value, output: $('output').value,
     duration: $('duration').value, attach: $('attach').checked,
-    anti_root: $('antiRoot').checked, postprocess_only: $('postOnly').checked,
-  });
-  say('runStatus', data.message || '', !data.ok);
+    anti_root: $('antiRoot').checked});
+  if (!data.ok) say('deviceStatus', data.message, true);
 };
-
-$('stop').onclick = async () => say('runStatus', (await post('/api/stop')).message);
-
+$('stop').onclick = () => post('/api/stop');
 $('install').onclick = async () => {
-  say('targetStatus', 'installing…');
-  const data = await post('/api/install', {device: device(), path: $('apk').value});
+  say('deviceStatus', 'installing…');
+  const data = await post('/api/install', {device: dev(), path: $('apk').value});
   await loadPackages();
   if (data.installed) {
     $('package').value = data.installed;
-    say('targetStatus', `installed — package is ${data.installed}`);
-  } else {
-    say('targetStatus', data.output || 'install finished', !data.ok);
-  }
+    say('deviceStatus', 'installed — package is ' + data.installed);
+  } else say('deviceStatus', data.output || '', !data.ok);
 };
-
-$('setup').onclick = async () => {
-  $('log').textContent = ''; since = 0;
-  const data = await post('/api/setup', {device: device()});
-  say('deviceStatus', data.message || '', !data.ok);
-};
-
-$('launch').onclick = async () => {
-  await post('/api/launch', {device: device(), package: $('package').value});
-  say('targetStatus', `launched ${$('package').value}`);
+$('launchApp').onclick = async () => {
+  await post('/api/launch', {device: dev(), package: $('package').value});
   setTimeout(refreshScreen, 1200);
 };
-
-$('loadReport').onclick = async () => {
-  const data = await get('/api/report?dir=' + encodeURIComponent($('output').value));
-  $('reportBox').hidden = false;
-  $('reportName').textContent = data.ok ? data.name : (data.error || '');
-  $('report').textContent = data.ok ? data.body : (data.artifacts || []).join('\n');
+$('provision').onclick = async () => {
+  const data = await post('/api/setup', {device: dev()});
+  say('launchStatus', data.message, !data.ok);
+  if (data.ok) showWorkspace();
 };
 
-$('refreshDevices').onclick = loadDevices;
-$('refreshPackages').onclick = loadPackages;
+// ---- view switching -------------------------------------------------------
+function showWorkspace() {
+  $('launchView').classList.add('hidden');
+  $('workView').classList.remove('hidden');
+  refreshScreen(); loadFindings();
+}
+function onDeviceChange() { markSelected(); loadPackages(); refreshScreen(); loadDeviceInfo(); }
+
+$('openWorkspace').onclick = () => dev() ? showWorkspace()
+  : say('launchStatus', 'pick a device that reports READY first', true);
+$('backToLaunch').onclick = () => {
+  $('workView').classList.add('hidden');
+  $('launchView').classList.remove('hidden');
+  loadDevices(); loadRuns();
+};
+$('rescan').onclick = loadDevices;
+$('device').onchange = onDeviceChange;
+$('reloadPkgs').onclick = loadPackages;
 $('refreshScreen').onclick = refreshScreen;
-$('device').onchange = () => { loadPackages(); refreshScreen(); };
-$('showHits').onclick = () => {
-  hitsShown = !hitsShown;
-  $('showHits').textContent = hitsShown ? 'hide tap targets' : 'show tap targets';
-  if (hitsShown) loadHits(); else $('overlay').innerHTML = '';
+$('runsRoot').onchange = loadRuns;
+$('toggleTargets').onclick = () => {
+  targetsOn = !targetsOn;
+  $('toggleTargets').textContent = targetsOn ? 'hide targets' : 'show targets';
+  if (targetsOn) loadTargets(); else $('overlay').innerHTML = '';
 };
-$('back').onclick = () => post('/api/key', {device: device(), key: 'KEYCODE_BACK'})
+$('expandLog').onclick = () => {
+  const tall = $('log').classList.toggle('tall');
+  $('expandLog').textContent = tall ? 'collapse' : 'expand';
+};
+$('back').onclick = () => post('/api/key', {device: dev(), key: 'KEYCODE_BACK'})
   .then(() => setTimeout(refreshScreen, 600));
-$('home').onclick = () => post('/api/key', {device: device(), key: 'KEYCODE_HOME'})
+$('home').onclick = () => post('/api/key', {device: dev(), key: 'KEYCODE_HOME'})
   .then(() => setTimeout(refreshScreen, 600));
+$('bindPill').textContent = '🔒 ' + location.host;
 
 loadDevices();
+loadRuns();
 pollLog();
 </script>
 </body>
