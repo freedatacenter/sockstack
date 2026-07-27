@@ -303,6 +303,40 @@ BODY_CHARS = 4000
 MAX_BODIES = 40
 
 
+PRINTABLE = set(range(0x20, 0x7f)) | {0x09, 0x0a, 0x0d}
+STRING_RUN = re.compile(rb'[\x20-\x7e]{4,}')
+HEX_BYTES = 1024
+
+
+def render_body(raw):
+    """One body, shown the way its contents deserve.
+
+    Decoding protobuf as UTF-8 produces a screen of replacement characters with
+    the useful parts — versions, package names, identifiers — buried in them. So
+    a body that is mostly unprintable is offered as its printable runs, the way
+    `strings` would, with the bytes themselves a click away. Text is still text.
+    """
+    printable = sum(1 for byte in raw if byte in PRINTABLE)
+    binary = bool(raw) and printable / len(raw) < 0.85
+    body = {'bytes': len(raw), 'binary': binary, 'hex': '', 'text': ''}
+    if not binary:
+        body['text'] = raw.decode('utf-8', 'replace')[:BODY_CHARS]
+        body['clipped'] = len(raw) > BODY_CHARS
+        return body
+    runs = [run.decode('ascii') for run in STRING_RUN.findall(raw)]
+    body['text'] = '\n'.join(runs)[:BODY_CHARS]
+    body['strings'] = len(runs)
+    window = raw[:HEX_BYTES]
+    lines = []
+    for offset in range(0, len(window), 16):
+        chunk = window[offset:offset + 16]
+        gutter = ''.join(chr(b) if b in PRINTABLE and b >= 0x20 else '.' for b in chunk)
+        lines.append(f'{offset:08x}  {chunk.hex(" "):<47}  {gutter}')
+    body['hex'] = '\n'.join(lines)
+    body['clipped'] = len(raw) > HEX_BYTES
+    return body
+
+
 def peer_address(peer):
     """`1.2.3.4:443` / `[::1]:443` -> the address alone."""
     text = (peer or '').strip()
@@ -385,10 +419,10 @@ def traffic_view(out_dir, peer=''):
         placed = [(ip, text) for ip, text in placed if ip == wanted]
     truncated = len(placed) > MAX_BODIES
     bodies = []
-    for address, text in placed[:MAX_BODIES]:
-        if len(text) > BODY_CHARS:
-            text, truncated = text[:BODY_CHARS], True
-        bodies.append({'ip': address, 'chars': len(text), 'text': text})
+    for address, raw in placed[:MAX_BODIES]:
+        body = render_body(raw)
+        truncated = truncated or body.pop('clipped', False)
+        bodies.append(dict(body, ip=address))
     return {'ok': True, 'error': '', 'peer': peer, 'requests': requests,
             'bodies': bodies, 'truncated': truncated, 'fragmented': fragmented,
             'state': stream_state(pcap, enc, wanted, bool(requests or bodies)),

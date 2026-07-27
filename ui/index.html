@@ -159,24 +159,25 @@
   .ok { color: var(--accent); } .warnc { color: var(--warn); } .badc { color: var(--bad); }
   .cursor { display: inline-block; width: 8px; height: 14px; background: var(--accent);
             vertical-align: -2px; margin-left: 4px; animation: blink 1.1s step-end infinite; }
-  .tab { cursor: pointer; color: var(--faint); padding-bottom: 3px;
-         border-bottom: 2px solid transparent; }
-  .tab.on { color: var(--accent); border-bottom-color: var(--accent); }
-  #traffic { background: #0b0c0e; border: 1px solid var(--hair); border-radius: 10px;
-             padding: 14px 16px; height: 190px; overflow: auto; }
-  #traffic.tall { height: 46vh; }
+  .reveal { font: 500 11px/1 var(--mono); color: var(--accent); cursor: pointer;
+            margin-top: 10px; display: inline-flex; align-items: center; gap: 6px; }
+  .reveal:hover { text-decoration: underline; }
+  .reveal .chev { display: inline-block; width: 9px; }
+  .drawer { margin-top: 10px; border-top: 1px solid var(--hair); padding-top: 12px;
+            max-height: 420px; overflow: auto; }
   .req { font: 500 12px/1.6 var(--mono); color: var(--mid); padding: 3px 0;
          word-break: break-all; }
   .req .badge { margin-right: 8px; }
   .req.other { color: var(--faint); }
   .body-head { font: 600 11px/1 var(--mono); color: var(--dim); margin: 14px 0 6px;
                letter-spacing: .04em; }
+  .hexlink { color: var(--accent); cursor: pointer; margin-left: 8px;
+             text-transform: none; letter-spacing: 0; }
+  .hexlink:hover { text-decoration: underline; }
   .body-text { font: 400 11px/1.6 var(--mono); color: #a4a8af; white-space: pre-wrap;
                word-break: break-word; background: #0f1013; border: 1px solid var(--hair);
                border-radius: 8px; padding: 10px 12px; max-height: 260px; overflow: auto; }
   .caveat { font-size: 11px; line-height: 1.6; color: var(--warn); margin: 0 0 10px; }
-  .sites { cursor: pointer; border-radius: 8px; padding: 2px 6px; margin: 0 -6px; }
-  .sites:hover { background: rgba(127,196,160,.08); }
   .status { font-size: 12px; color: var(--dim); margin-top: 10px; min-height: 17px; }
   .status.bad { color: var(--warn); }
   label.field { display: block; font-size: 11px; color: var(--dim); margin-bottom: 5px; }
@@ -359,15 +360,11 @@
 
   <div class="logstrip">
     <div style="display:flex;justify-content:space-between;margin-bottom:10px;gap:12px">
-      <div style="display:flex;gap:16px">
-        <span class="cap tab on" id="tabLog" data-i18n="card.log"></span>
-        <span class="cap tab" id="tabTraffic" data-i18n="card.traffic"></span>
-      </div>
+      <span class="cap" data-i18n="card.log"></span>
       <span class="mono" style="font-size:11px;color:var(--faint);cursor:pointer"
             id="expandLog"></span>
     </div>
     <div id="log"></div>
-    <div id="traffic" class="hidden"></div>
   </div>
 </div>
 
@@ -418,8 +415,7 @@ const STRINGS = {
     'card.screen': 'Screen',
     'card.attribution': 'Call-stack attribution',
     'card.log': 'Log',
-    'card.traffic': 'Traffic',
-    'traffic.open': 'show what went to this address',
+    'traffic.open': 'what went to this address',
     'traffic.loading': 'reading the capture for',
     'traffic.caveat': 'Traffic to $1. The tracer keeps no payload, so this is what ' +
                       'went to that address — not proof that this call site is what ' +
@@ -428,7 +424,13 @@ const STRINGS = {
     'traffic.noRequests': 'No HTTP requests to this address in the capture.',
     'traffic.noBodies': 'No decrypted bodies for this address.',
     'traffic.body': 'body',
-    'traffic.chars': 'chars',
+    'traffic.bytes': 'bytes',
+    'traffic.binary': 'binary, shown as its printable runs',
+    'traffic.textBody': 'text',
+    'traffic.runs': 'runs',
+    'traffic.hex': 'hex',
+    'traffic.strings': 'strings',
+    'traffic.noStrings': 'nothing printable in it at all',
     'traffic.encrypted': 'This address is in the capture, but its TLS was never ' +
                          'decrypted — no keys were captured for it. The app speaks ' +
                          'to it past the libraries friTap hooks, often its own ' +
@@ -540,8 +542,7 @@ const STRINGS = {
     'card.screen': 'Экран',
     'card.attribution': 'Атрибуция вызовов',
     'card.log': 'Журнал',
-    'card.traffic': 'Трафик',
-    'traffic.open': 'показать, что ушло на этот адрес',
+    'traffic.open': 'что ушло на этот адрес',
     'traffic.loading': 'читаю захват для',
     'traffic.caveat': 'Трафик на $1. Трейсер не хранит полезную нагрузку, поэтому ' +
                       'это то, что ушло на данный адрес, — а не доказательство, что ' +
@@ -550,7 +551,13 @@ const STRINGS = {
     'traffic.noRequests': 'HTTP-запросов на этот адрес в захвате нет.',
     'traffic.noBodies': 'Расшифрованных тел для этого адреса нет.',
     'traffic.body': 'тело',
-    'traffic.chars': 'симв.',
+    'traffic.bytes': 'байт',
+    'traffic.binary': 'бинарь, показаны печатаемые фрагменты',
+    'traffic.textBody': 'текст',
+    'traffic.runs': 'фрагм.',
+    'traffic.hex': 'hex',
+    'traffic.strings': 'строки',
+    'traffic.noStrings': 'печатаемого нет вовсе',
     'traffic.encrypted': 'Этот адрес в захвате есть, но его TLS не расшифрован — ' +
                          'ключей для этого соединения не перехвачено. Приложение ' +
                          'говорит с ним мимо библиотек, которые цепляет friTap, ' +
@@ -848,28 +855,40 @@ async function loadFindings() {
           <span class="badge ${card.tone}">${esc(card.kind)}</span>
         </div>
       </div>
-      ${frames ? `<div class="frames sites" title="${t('traffic.open')}">${frames}</div>`
-               : ''}
+      ${frames ? `<div class="frames">${frames}</div>` : ''}
       <div class="note">${esc(card.note || card.label)}</div>
+      <div class="reveal"><span class="chev">▸</span> ${t('traffic.open')}</div>
+      <div class="drawer hidden"></div>
     </div>`;
   }).join('') || `<div class="empty">${t('findings.noPeers')}</div>`);
-  // A call site is a way into the traffic: click it and the strip below shows
-  // what went to the address it reached.
+  // The traffic opens under the call site it belongs to. Anywhere else and the
+  // reader has to hold "which card did I click" in their head while looking
+  // somewhere it is not written down.
   box.querySelectorAll('.peer').forEach(card => {
-    const sites = card.querySelector('.sites');
-    if (sites) sites.onclick = () => loadTraffic(card.dataset.peer);
+    const reveal = card.querySelector('.reveal');
+    if (reveal) reveal.onclick = () => toggleTraffic(card);
   });
 }
 
 // ---- what went to that address --------------------------------------------
-async function loadTraffic(peer) {
-  trafficLoaded = true;
-  showStrip('traffic');
-  const box = $('traffic');
+async function toggleTraffic(card) {
+  const drawer = card.querySelector('.drawer');
+  const open = drawer.classList.toggle('hidden') === false;
+  card.querySelector('.chev').textContent = open ? '▾' : '▸';
+  if (open && !drawer.dataset.loaded) {
+    drawer.dataset.loaded = '1';
+    await loadTraffic(card.dataset.peer, drawer);
+  }
+}
+async function loadTraffic(peer, box) {
   box.innerHTML = `<div class="empty">${t('traffic.loading')} ${esc(peer)}…</div>`;
   const data = await get('/api/traffic?dir=' + encodeURIComponent($('output').value) +
                          '&peer=' + encodeURIComponent(peer));
-  if (!data.ok) { box.innerHTML = `<div class="empty">${esc(data.error)}</div>`; return; }
+  if (!data.ok) {
+    box.innerHTML = `<div class="empty">${esc(data.error)}</div>`;
+    delete box.dataset.loaded;             // a failure is worth retrying
+    return;
+  }
   // Said plainly, every time: this is traffic to that address. The tracer keeps
   // no payload, so nothing here proves which call site sent which body.
   const caveat = `<p class="caveat">${t('traffic.caveat', esc(peer))}</p>`;
@@ -877,10 +896,19 @@ async function loadTraffic(peer) {
     `<div class="req ${r.target ? '' : 'other'}">
        <span class="badge ${r.target ? 'good' : 'unknown'}">${r.proto}</span>${esc(r.label)}
      </div>`).join('') || `<div class="empty">${t('traffic.noRequests')}</div>`;
-  const bodies = (data.bodies || []).map((b, i) =>
-    `<div class="body-head">${t('traffic.body')} ${i + 1} · ${b.chars} ${t('traffic.chars')}
-       · ${esc(b.ip)}</div>
-     <div class="body-text">${esc(b.text)}</div>`).join('');
+  const bodies = (data.bodies || []).map((b, i) => {
+    // A binary body is shown as its printable runs — the bytes are one click
+    // away, and calling it "text" when it is protobuf helps nobody.
+    const kind = b.binary ? `${t('traffic.binary')} · ${b.strings} ${t('traffic.runs')}`
+                          : t('traffic.textBody');
+    const hex = b.hex ? `<span class="hexlink" data-body="${i}">${t('traffic.hex')}</span>`
+                      : '';
+    return `<div class="body-head">${t('traffic.body')} ${i + 1} · ${b.bytes}
+       ${t('traffic.bytes')} · ${kind} · ${esc(b.ip)} ${hex}</div>
+     <div class="body-text" data-text="${i}">${esc(b.text) ||
+       `<span style="color:var(--faint)">${t('traffic.noStrings')}</span>`}</div>
+     <div class="body-text hidden" data-hex="${i}">${esc(b.hex)}</div>`;
+  }).join('');
   const notes = [];
   // "We could not read it" must never render as "it sent nothing".
   if (data.state === 'encrypted') notes.push(t('traffic.encrypted'));
@@ -890,14 +918,12 @@ async function loadTraffic(peer) {
   box.innerHTML = caveat + requests +
     (bodies || `<div class="empty" style="margin-top:12px">${t('traffic.noBodies')}</div>`) +
     (notes.length ? `<p class="caveat" style="margin-top:12px">${notes.join(' ')}</p>` : '');
-}
-
-function showStrip(which) {
-  const traffic = which === 'traffic';
-  $('log').classList.toggle('hidden', traffic);
-  $('traffic').classList.toggle('hidden', !traffic);
-  $('tabLog').classList.toggle('on', !traffic);
-  $('tabTraffic').classList.toggle('on', traffic);
+  box.querySelectorAll('.hexlink').forEach(link => link.onclick = () => {
+    const i = link.dataset.body;
+    const showingHex = box.querySelector(`[data-hex="${i}"]`).classList.toggle('hidden');
+    box.querySelector(`[data-text="${i}"]`).classList.toggle('hidden', !showingHex);
+    link.textContent = t(showingHex ? 'traffic.hex' : 'traffic.strings');
+  });
 }
 
 // ---- recent runs ----------------------------------------------------------
@@ -928,7 +954,6 @@ async function loadRuns() {
 // ---- run control ----------------------------------------------------------
 let since = 0;
 let RUN_RUNNING = false;
-let trafficLoaded = false;
 function paint(line) {
   const cls = line.startsWith('[+]') ? 'ok' : line.startsWith('[!]') ? 'badc'
             : line.startsWith('[i]') || line.startsWith('[·]') ? 'warnc' : '';
@@ -1146,11 +1171,8 @@ $('toggleTargets').onclick = () => {
 };
 $('expandLog').onclick = () => {
   const tall = $('log').classList.toggle('tall');
-  $('traffic').classList.toggle('tall', tall);
   $('expandLog').textContent = t(tall ? 'act.collapse' : 'act.expand');
 };
-$('tabLog').onclick = () => showStrip('log');
-$('tabTraffic').onclick = () => { showStrip('traffic'); if (!trafficLoaded) loadTraffic(''); };
 document.querySelectorAll('[data-lang-switch]').forEach(node => node.onclick = () => {
   LANG = LANG === 'en' ? 'ru' : 'en';
   applyLang();

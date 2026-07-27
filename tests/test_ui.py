@@ -456,3 +456,70 @@ class TrafficView(unittest.TestCase):
     def test_a_missing_directory_is_not_a_crash(self):
         self.assertFalse(server.traffic_view('/nonexistent/dir')['ok'])
         self.assertFalse(server.traffic_view('')['ok'])
+
+
+class TrafficIsWhereTheCallSiteIs(unittest.TestCase):
+    """It was first built as a tab in the strip at the foot of the page, which
+    meant clicking in one place and reading the answer in another — and nothing
+    said the frames were clickable at all."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(INDEX, encoding='utf-8') as fh:
+            cls.page = fh.read()
+
+    def test_the_drawer_is_rendered_inside_the_peer_card(self):
+        card = self.page.split('class="peer ${card.tone}"', 1)[1].split('`;', 1)[0]
+        self.assertIn('class="drawer', card)
+        self.assertIn('class="reveal"', card)
+
+    def test_the_bottom_strip_holds_the_log_and_nothing_else(self):
+        strip = self.page.split('class="logstrip"', 1)[1].split('</div>\n</div>', 1)[0]
+        self.assertIn('id="log"', strip)
+        self.assertNotIn('id="traffic"', strip)
+        self.assertNotIn('tabTraffic', self.page)
+
+    def test_the_control_says_what_it_does(self):
+        # A clickable region with no label is not a control, it is a rumour.
+        self.assertIn("t('traffic.open')", self.page)
+
+
+class RenderBody(unittest.TestCase):
+    """A decrypted body is as likely to be protobuf as JSON. Rendered as UTF-8,
+    the useful parts — versions, package names, identifiers — drown in
+    replacement characters."""
+
+    def test_text_stays_text(self):
+        body = server.render_body(b'{"user":"anna","ok":true}')
+        self.assertFalse(body['binary'])
+        self.assertEqual(body['text'], '{"user":"anna","ok":true}')
+        self.assertEqual(body['hex'], '')
+
+    def test_protobuf_is_offered_as_its_printable_runs(self):
+        raw = (b'\xca\x02\x05\x10\xa5\x07\x08\x03\n\x054.0.0\x12\x14'
+               b'\x18\xd2\x02!\n\x0726.22.1\x12\x0cru.oneme.app\x00\xff\xfe')
+        body = server.render_body(raw)
+        self.assertTrue(body['binary'])
+        self.assertIn('4.0.0', body['text'])
+        self.assertIn('ru.oneme.app', body['text'])
+        # and the bytes remain reachable rather than being summarised away
+        self.assertIn('00000000', body['hex'])
+
+    def test_short_runs_are_noise_and_are_left_out(self):
+        body = server.render_body(b'\x00\x01ab\x02\x03cd\x04' * 8)
+        self.assertTrue(body['binary'])
+        self.assertEqual(body['text'], '')
+
+    def test_the_hexdump_carries_an_ascii_gutter(self):
+        body = server.render_body(b'\x00' * 4 + b'HTTP' + b'\xff' * 8)
+        first = body['hex'].splitlines()[0]
+        self.assertTrue(first.startswith('00000000  '))
+        self.assertTrue(first.endswith('....HTTP........'))
+
+    def test_a_huge_body_is_bounded_and_says_it_was_cut(self):
+        body = server.render_body(b'A' * (server.BODY_CHARS + 500))
+        self.assertTrue(body['clipped'])
+        self.assertEqual(len(body['text']), server.BODY_CHARS)
+
+    def test_an_empty_body_is_not_called_binary(self):
+        self.assertFalse(server.render_body(b'')['binary'])

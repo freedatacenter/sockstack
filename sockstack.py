@@ -1074,7 +1074,11 @@ BODY_SOURCES = (('enc', 'http2.body.reassembled.data', False),
 
 
 def collect_bodies(pcap, enc, collect=None):
-    """[(destination_ip, body_text)], plus whether any of it is fragmented.
+    """[(destination_ip, raw_bytes)], plus whether any of it is fragmented.
+
+    Raw bytes, not text: a decrypted body is as likely to be protobuf as it is
+    to be JSON, and decoding it here would leave every caller holding a string
+    of replacement characters with no way back to what was actually sent.
 
     One definition of "where a body comes from", used by the written report and
     by the panel. The destination rides along because a body nobody can place is
@@ -1110,8 +1114,8 @@ def collect_bodies(pcap, enc, collect=None):
         if fingerprint in seen:
             continue
         seen.add(fingerprint)
-        bodies.append((first_addr(ip4, ip6), raw.decode('utf-8', 'replace')))
-    bodies.sort(key=lambda pair: body_rank(pair[1]))
+        bodies.append((first_addr(ip4, ip6), raw))
+    bodies.sort(key=lambda pair: body_rank(pair[1].decode('utf-8', 'replace')))
     return bodies, fragmented
 
 
@@ -1272,7 +1276,7 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
     http1, http2 = http_exchanges(pcap, enc, target_ips, collect)
 
     placed_bodies, fragmented = collect_bodies(pcap, enc, collect)
-    bodies = [text for _, text in placed_bodies]
+    bodies = [raw.decode('utf-8', 'replace') for _, raw in placed_bodies]
 
     stamp = run_stamp(out_dir, stamp)
     bodies_name = f'decrypted_bodies_{stamp}.txt'
