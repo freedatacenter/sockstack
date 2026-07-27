@@ -321,6 +321,33 @@ animating, and returns an error rather than an empty screen. That is temporary
 and normal; the UI says so instead of drawing an empty overlay, which would read
 as "nothing here is clickable".
 
+## `adb connect` exits 0 when it fails
+
+```
+$ adb connect 10.0.0.5:5555 ; echo $?
+failed to connect to '10.0.0.5:5555': Connection refused
+0
+```
+
+The exit status describes the command, not the connection. Anything reading it
+adds a device that is not there, which is discovered one step later as a run that
+traces nothing. Read the sentence: `connected to` / `already connected to` are the
+only two outcomes that mean a device arrived.
+
+## A version-mismatched adb client kills the server — including a forwarded one
+
+`adb` kills any server whose protocol version differs from the client's and
+starts its own. Forward a remote host's `5037` over SSH, point a differently
+versioned client at it, and the thing it kills is the **remote** server, taking
+every session on that host with it — the local client then quietly starts a local
+daemon on the near end of the tunnel and reports no devices, which reads like a
+network problem.
+
+Match the two `adb --version`s before forwarding a server, or forward the device
+port (`5555`) instead — that carries no client/server negotiation. Better still,
+run the panel on the host with the device and forward the panel's own port; then
+the only thing crossing the tunnel is HTTP.
+
 ## Root differs: emulator vs phone
 
 - **Emulator / userdebug:** `adb root`, and the shell is already root.

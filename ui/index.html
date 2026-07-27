@@ -95,6 +95,9 @@
           transition: border-color .12s, background .12s; }
   .drop:hover, .drop.over { border-color: var(--accent);
                             background: rgba(127,196,160,.06); }
+  .cmd { font: 500 11px/1.7 var(--mono); color: var(--mid); background: var(--sunken);
+         border: 1px solid var(--hair); border-radius: 8px; padding: 10px 12px;
+         white-space: pre-wrap; word-break: break-all; user-select: all; }
   .drop-main { font-size: 13px; color: var(--mid); line-height: 1.5; }
   .drop-sub { font: 500 11px/1 var(--mono); color: var(--faint); margin-top: 7px; }
   .run-item { padding: 12px 13px; border: 1px solid var(--line); border-radius: 9px;
@@ -196,11 +199,22 @@
                    placeholder="192.168.100.88:5555">
             <button class="btn" id="connect" data-i18n="act.connect"></button>
           </div>
-          <div style="display:flex;justify-content:space-between;margin-top:8px">
+          <div style="display:flex;justify-content:space-between;margin-top:8px;
+                      gap:10px;flex-wrap:wrap">
             <span class="mono" style="font-size:11px;color:var(--faint)"
                   data-i18n="connect.hint"></span>
-            <span class="mono" id="togglePair" data-i18n="act.pairShow"
-                  style="font-size:11px;color:var(--accent);cursor:pointer"></span>
+            <div style="display:flex;gap:12px">
+              <span class="mono" id="toggleRemote" data-i18n="act.remoteShow"
+                    style="font-size:11px;color:var(--accent);cursor:pointer"></span>
+              <span class="mono" id="togglePair" data-i18n="act.pairShow"
+                    style="font-size:11px;color:var(--accent);cursor:pointer"></span>
+            </div>
+          </div>
+
+          <div id="remoteBox" class="hidden" style="margin-top:12px">
+            <p style="margin:0 0 10px;font-size:11px;line-height:1.6;color:var(--faint)"
+               data-i18n="remote.why"></p>
+            <div id="remoteCmds"></div>
           </div>
           <div id="pairBox" class="hidden" style="margin-top:10px">
             <p style="margin:0 0 8px;font-size:11px;line-height:1.6;color:var(--faint)"
@@ -352,6 +366,21 @@ const STRINGS = {
     'card.devices': '1 · Devices · attached',
     'connect.label': 'a device over the network (emulator, stand, wireless debugging)',
     'connect.hint': 'host, or host:port — 5555 assumed',
+    'remote.why': 'The device is on a machine you reach with an SSH key? Do not ' +
+                  'point this field at it across the network: adb has no ' +
+                  'authentication and neither does this page. Forward a port over ' +
+                  'SSH instead and connect to the near end. This panel will not ' +
+                  'run ssh for you — it has no login of its own, so it would be ' +
+                  'lending your key to whoever opened the page.',
+    'remote.a': 'Best — run the panel where the device is, and forward the panel:',
+    'remote.aNote': 'then open the same address here, on your own machine.',
+    'remote.b': 'Or keep the panel here and forward the device\'s adb port:',
+    'remote.bNote': 'then connect to 127.0.0.1:5555 in the field above.',
+    'remote.c': 'Or forward the whole adb server and start the panel pointed at it:',
+    'remote.cNote': 'every device on that host then appears in the list above.',
+    'remote.server': 'talking to adb server',
+    'act.remoteShow': 'the device is on a remote host…',
+    'act.remoteHide': 'hide the remote recipe',
     'pair.why': 'Android 11+ wireless debugging pairs first, on a different port. ' +
                 'Both the port and the six-digit code are shown by the pairing ' +
                 'dialog on the device, and both change every time.',
@@ -439,6 +468,20 @@ const STRINGS = {
     'card.devices': '1 · Устройства · подключено',
     'connect.label': 'устройство по сети (эмулятор, стенд, беспроводная отладка)',
     'connect.hint': 'хост или хост:порт — по умолчанию 5555',
+    'remote.why': 'Устройство на машине, куда вы ходите по SSH-ключу? Не указывайте ' +
+                  'её адрес в этом поле напрямую: у adb нет аутентификации, и у ' +
+                  'этой страницы тоже. Пробросьте порт через SSH и подключайтесь к ' +
+                  'ближнему концу. Сама панель ssh не запускает: своего входа у ' +
+                  'неё нет, и она одалживала бы ваш ключ любому, кто её открыл.',
+    'remote.a': 'Лучший вариант — запустить панель там, где устройство, и пробросить её:',
+    'remote.aNote': 'потом открыть этот же адрес у себя.',
+    'remote.b': 'Или оставить панель здесь и пробросить adb-порт устройства:',
+    'remote.bNote': 'и подключиться к 127.0.0.1:5555 в поле выше.',
+    'remote.c': 'Или пробросить весь adb-сервер и запустить панель с указанием на него:',
+    'remote.cNote': 'тогда в списке выше появятся все устройства того хоста.',
+    'remote.server': 'работаем с adb-сервером',
+    'act.remoteShow': 'устройство на удалённом хосте…',
+    'act.remoteHide': 'скрыть рецепт',
     'pair.why': 'Беспроводная отладка Android 11+ сначала требует сопряжения, и ' +
                 'порт для него другой. Порт и шестизначный код показывает диалог ' +
                 'сопряжения на самом устройстве, и оба меняются каждый раз.',
@@ -542,6 +585,9 @@ function applyLang() {
                                  ? 'act.collapse' : 'act.expand');
   $('togglePair').textContent = t($('pairBox').classList.contains('hidden')
                                   ? 'act.pairShow' : 'act.pairHide');
+  const remoteShown = !$('remoteBox').classList.contains('hidden');
+  $('toggleRemote').textContent = t(remoteShown ? 'act.remoteHide' : 'act.remoteShow');
+  if (remoteShown) remoteRecipe();
   if (!RUN_RUNNING) $('statusText').textContent = t('st.idle');
   loadDevices(); loadRuns(); loadFindings();
 }
@@ -558,9 +604,12 @@ function say(id, text, bad) {
 
 // ---- devices --------------------------------------------------------------
 let devices = [];
+let adbServer = 'tcp:127.0.0.1:5037';
 async function loadDevices() {
   const data = await get('/api/devices');
   devices = data.devices || [];
+  adbServer = data.server || adbServer;
+  if (!$('remoteBox').classList.contains('hidden')) remoteRecipe();
   const list = $('deviceList');
   list.innerHTML = '';
   const select = $('device');
@@ -874,6 +923,40 @@ $('connect').onclick = async () => {
   }
 };
 $('address').addEventListener('keydown', e => { if (e.key === 'Enter') $('connect').click(); });
+function remoteRecipe() {
+  // The host from whatever was typed, so the lines can be used as they stand.
+  const typed = ($('address').value || '').trim().split(':')[0];
+  const host = typed || '<host>';
+  const port = location.port || '8722';
+  const key = '-i ~/.ssh/id_ed25519 ';
+  const step = (label, command, note) =>
+    `<div style="margin-bottom:12px">
+       <div style="font-size:11px;color:var(--dim);margin-bottom:5px">${label}</div>
+       <div class="cmd">${esc(command)}</div>
+       <div style="font-size:11px;color:var(--faint);margin-top:5px">${note}</div>
+     </div>`;
+  $('remoteCmds').innerHTML =
+    step(t('remote.a'),
+         `ssh ${key}-L ${port}:127.0.0.1:${port} user@${host}\n` +
+         `  # on that host:  python3 ui/server.py`,
+         t('remote.aNote')) +
+    step(t('remote.b'), `ssh ${key}-N -L 5555:127.0.0.1:5555 user@${host}`,
+         t('remote.bNote')) +
+    step(t('remote.c'),
+         `ssh ${key}-N -L 5038:127.0.0.1:5037 user@${host}\n` +
+         `ANDROID_ADB_SERVER_PORT=5038 python3 ui/server.py`,
+         t('remote.cNote')) +
+    `<div class="mono" style="font-size:11px;color:var(--faint)">` +
+    `${t('remote.server')}: ${esc(adbServer)}</div>`;
+}
+$('toggleRemote').onclick = () => {
+  const shown = !$('remoteBox').classList.toggle('hidden');
+  $('toggleRemote').textContent = t(shown ? 'act.remoteHide' : 'act.remoteShow');
+  if (shown) remoteRecipe();
+};
+$('address').addEventListener('input', () => {
+  if (!$('remoteBox').classList.contains('hidden')) remoteRecipe();
+});
 $('togglePair').onclick = () => {
   const shown = !$('pairBox').classList.toggle('hidden');
   $('togglePair').textContent = t(shown ? 'act.pairHide' : 'act.pairShow');

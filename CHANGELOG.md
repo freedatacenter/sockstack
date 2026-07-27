@@ -23,6 +23,14 @@ For the same reason recent runs are described by what they recorded — call
 sites, records, whether the bridge worked — and never as "clean". Nothing found
 and nothing working look identical from the outside.
 
+For a device on a host reached with an SSH key, the card prints the three tunnel
+recipes with the host filled in and states which adb server it is talking to, so
+the forwarded-server form can be seen to have worked. It does not run `ssh`: the
+page has no login of its own, and a button that used your key would be lending it
+to whoever opened the page. `docs/GOTCHAS.md` gains the trap that makes the
+forwarded-server form bite — a version-mismatched client kills the server it
+connects to, which over a tunnel is the remote one.
+
 A stand reached over the network can be connected from the page: an address, a
 button, `adb connect` underneath, and pairing for Android 11+ wireless debugging
 behind a link since its port and code are different and change every time. The

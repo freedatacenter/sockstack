@@ -58,6 +58,17 @@ hand. Android 11+ wireless debugging needs pairing first, which is behind the
 link next to it; the port for pairing is not the port for debugging, and the
 device shows both.
 
+If that stand is a host you reach with an SSH key, do not put its address in the
+field — adb authenticates nobody, and neither does this page. Forward a port and
+connect to the near end; **the device is on a remote host…** prints the exact
+commands with your host filled in. The simplest of them is to run the panel on
+the stand and forward only the panel:
+
+```bash
+ssh -i ~/.ssh/id_ed25519 -L 8722:127.0.0.1:8722 user@stand
+# on the stand: python3 ui/server.py — then open http://127.0.0.1:8722 locally
+```
+
 The APK goes in on the launch screen, second card: drop the file on it, or type
 a path that already exists on the host running `adb`. Dropping it uploads it to
 that host first, which is the case that matters when the browser is on your

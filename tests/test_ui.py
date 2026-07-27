@@ -347,3 +347,31 @@ class NetworkDevice(unittest.TestCase):
                    'emulator-5554         device product:z model:Emu device:w\n')
         got = {d['serial']: d['network'] for d in server.parse_devices(listing)}
         self.assertEqual(got, {'192.168.100.88:5555': True, 'emulator-5554': False})
+
+
+class AdbServerLabel(unittest.TestCase):
+    """Which adb server the page is talking to. The whole remote-stand recipe is
+    pointing the client at a forwarded one, and nothing else on the page would
+    show whether that took."""
+
+    def setUp(self):
+        self.saved = {k: os.environ.pop(k, None)
+                      for k in ('ADB_SERVER_SOCKET', 'ANDROID_ADB_SERVER_PORT')}
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
+
+    def test_the_default_is_named_not_left_blank(self):
+        self.assertEqual(server.adb_server_label(), 'tcp:127.0.0.1:5037')
+
+    def test_a_forwarded_port_is_visible(self):
+        os.environ['ANDROID_ADB_SERVER_PORT'] = '5038'
+        self.assertEqual(server.adb_server_label(), 'tcp:127.0.0.1:5038')
+
+    def test_an_explicit_socket_wins(self):
+        os.environ['ANDROID_ADB_SERVER_PORT'] = '5038'
+        os.environ['ADB_SERVER_SOCKET'] = 'tcp:10.0.0.9:5037'
+        self.assertEqual(server.adb_server_label(), 'tcp:10.0.0.9:5037')

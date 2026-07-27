@@ -108,6 +108,17 @@ def pair_verdict(ok, out):
             'output': text or 'adb said nothing at all'}
 
 
+def adb_server_label():
+    """Which adb server these commands talk to.
+
+    Worth stating on the page: the recipe for a device on another machine is to
+    forward that machine's adb server and point the client at the near end, and
+    nothing else here would show whether it took effect.
+    """
+    return (os.environ.get('ADB_SERVER_SOCKET')
+            or f"tcp:127.0.0.1:{os.environ.get('ANDROID_ADB_SERVER_PORT') or 5037}")
+
+
 def is_network_device(serial):
     """host:port, as `adb connect` produces. USB serials have no colon, and a
     port that is not a number is a serial that happens to contain one."""
@@ -429,6 +440,7 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == '/api/devices':
                 ok, out = adb(None, 'devices', '-l')
                 return self._send(200, {'ok': ok, 'devices': parse_devices(out) if ok else [],
+                                        'server': adb_server_label(),
                                         'error': '' if ok else out})
             if url.path == '/api/packages':
                 return self._send(200, self._packages(serial))

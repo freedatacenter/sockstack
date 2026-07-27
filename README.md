@@ -190,6 +190,31 @@ six-digit code the device shows you; that lives behind **pair a wireless
 device…** on the same card. Devices connected over the network carry a ✕ to
 disconnect them; USB ones do not, since there would be nothing to disconnect.
 
+**A device on a host you reach with an SSH key.** Do not type that host into the
+connect field: adb has no authentication, and neither has this page. Forward a
+port and connect to the near end. **the device is on a remote host…** on the same
+card prints the three commands with the host already filled in:
+
+```bash
+# best: run the panel where the device is, forward the panel
+ssh -i ~/.ssh/id_ed25519 -L 8722:127.0.0.1:8722 user@stand   # then: python3 ui/server.py
+
+# or keep the panel here and forward the device's adb port, then connect 127.0.0.1:5555
+ssh -i ~/.ssh/id_ed25519 -N -L 5555:127.0.0.1:5555 user@stand
+
+# or forward the whole adb server; every device on that host appears in the list
+ssh -i ~/.ssh/id_ed25519 -N -L 5038:127.0.0.1:5037 user@stand
+ANDROID_ADB_SERVER_PORT=5038 python3 ui/server.py
+```
+
+The card shows which adb server it is talking to, so the third form can be seen
+to have worked. It comes with a caveat worth reading before using it: a client
+whose version differs from the server's kills that server — over a tunnel, the
+remote one. See `docs/GOTCHAS.md`.
+
+The panel will not run `ssh` for you, and that is deliberate: it has no login of
+its own, so an SSH button would lend your key to anyone who opened the page.
+
 **Installing the target.** Second card on the launch screen: drop an APK on it,
 or give a path already on the analysis host. The upload matters when the browser
 is not on the machine holding the device — the usual shape, a laptop tunnelled
