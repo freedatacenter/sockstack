@@ -744,3 +744,249 @@ class UidFromPid(unittest.TestCase):
 
     def test_a_process_that_vanished_yields_nothing(self):
         self.assertIsNone(self.uid(''))
+
+
+# --------------------------------------------------------------------------- ftrace source
+
+# Shape of `trace_pipe` under sock:inet_sock_set_state. These are written to the
+# format the kernel emits (comm-pid, cpu, flags, timestamp, event, k=v fields);
+# no line here was captured from a device, so they test the parser's contract,
+# not a particular kernel's spelling.
+FTRACE_SYN = ('     curl-3421    [002] .... 12345.678901: inet_sock_set_state: '
+              'family=AF_INET protocol=IPPROTO_TCP sport=45678 dport=443 '
+              'saddr=10.0.2.15 daddr=142.250.185.78 saddrv6=::ffff:10.0.2.15 '
+              'daddrv6=::ffff:142.250.185.78 oldstate=TCP_CLOSE newstate=TCP_SYN_SENT')
+FTRACE_EST = FTRACE_SYN.replace('oldstate=TCP_CLOSE newstate=TCP_SYN_SENT',
+                                'oldstate=TCP_SYN_SENT newstate=TCP_ESTABLISHED')
+FTRACE_INBOUND = FTRACE_SYN.replace('oldstate=TCP_CLOSE newstate=TCP_SYN_SENT',
+                                    'oldstate=TCP_SYN_RECV newstate=TCP_ESTABLISHED')
+
+
+class FtraceEventParsing(unittest.TestCase):
+    def test_a_connect_attempt_is_a_peer_that_is_not_established(self):
+        event = sockstack.parse_ftrace_socket_event(FTRACE_SYN)
+        self.assertEqual((event['ip'], event['port'], event['proto']),
+                         ('142.250.185.78', 443, 'tcp'))
+        self.assertFalse(event['established'])
+        self.assertEqual((event['pid'], event['comm']), (3421, 'curl'))
+
+    def test_the_far_end_answering_is_established(self):
+        self.assertTrue(sockstack.parse_ftrace_socket_event(FTRACE_EST)['established'])
+
+    def test_an_inbound_connection_is_not_somewhere_the_target_went(self):
+        # LISTEN -> SYN_RECV -> ESTABLISHED. Its "peer" dialled in; counting it
+        # would invent outbound traffic out of an open port.
+        self.assertIsNone(sockstack.parse_ftrace_socket_event(FTRACE_INBOUND))
+
+    def test_uninteresting_transitions_are_dropped(self):
+        for states in ('oldstate=TCP_ESTABLISHED newstate=TCP_FIN_WAIT1',
+                       'oldstate=TCP_CLOSE newstate=TCP_LISTEN',
+                       'oldstate=TCP_FIN_WAIT2 newstate=TCP_CLOSE'):
+            line = FTRACE_SYN.replace(
+                'oldstate=TCP_CLOSE newstate=TCP_SYN_SENT', states)
+            self.assertIsNone(sockstack.parse_ftrace_socket_event(line), states)
+
+    def test_ipv6_is_read_from_the_v6_field(self):
+        line = ('  Binder:1234_2-1567  [001] .... 99.9: inet_sock_set_state: '
+                'family=AF_INET6 protocol=IPPROTO_TCP sport=39000 dport=8443 '
+                'saddr=0.0.0.0 daddr=0.0.0.0 saddrv6=2a00:1450::1 '
+                'daddrv6=2606:4700:4700::1111 '
+                'oldstate=TCP_CLOSE newstate=TCP_SYN_SENT')
+        event = sockstack.parse_ftrace_socket_event(line)
+        self.assertEqual(event['ip'], '2606:4700:4700::1111')
+        # comm containing dashes and digits must not eat the pid
+        self.assertEqual((event['pid'], event['comm']), (1567, 'Binder:1234_2'))
+
+    def test_a_mapped_v6_address_is_spelled_the_way_proc_net_spells_it(self):
+        # Two spellings of one host would show up downstream as "the tracer
+        # missed this", which is a finding invented by formatting.
+        line = FTRACE_SYN.replace('family=AF_INET ', 'family=AF_INET6 ')
+        self.assertEqual(sockstack.parse_ftrace_socket_event(line)['ip'],
+                         '142.250.185.78')
+
+    def test_a_tgid_column_does_not_shift_the_fields(self):
+        line = ('     curl-3421  (  3400) [002] .... 12345.6: inet_sock_set_state: '
+                'family=AF_INET protocol=IPPROTO_TCP sport=1 dport=443 '
+                'saddr=10.0.2.15 daddr=1.2.3.4 '
+                'oldstate=TCP_CLOSE newstate=TCP_SYN_SENT')
+        event = sockstack.parse_ftrace_socket_event(line)
+        self.assertEqual((event['pid'], event['ip'], event['port']),
+                         (3421, '1.2.3.4', 443))
+
+    def test_noise_and_truncation_are_not_crashes(self):
+        for line in ('', '\n', 'CPU:0 [LOST 12 EVENTS]',
+                     '# tracer: nop',
+                     '     curl-3421    [002] .... 1.0: inet_sock_set_state:',
+                     FTRACE_SYN.replace('dport=443', 'dport=notanumber'),
+                     FTRACE_SYN[:60]):
+            self.assertIsNone(sockstack.parse_ftrace_socket_event(line), repr(line))
+
+    def test_an_unroutable_destination_is_not_a_peer(self):
+        line = FTRACE_SYN.replace('daddr=142.250.185.78', 'daddr=0.0.0.0')
+        self.assertIsNone(sockstack.parse_ftrace_socket_event(line))
+
+
+class UidPidListing(unittest.TestCase):
+    PS = ('  PID  UID\n'
+          '  1234 10132\n'
+          '  1300 10132\n'
+          '  1400 1000\n'
+          '  bad line\n')
+
+    def test_only_the_targets_uid_is_kept(self):
+        self.assertEqual(sockstack.parse_uid_pids(self.PS, 10132), [1234, 1300])
+
+    def test_a_uid_with_nothing_running_is_empty_not_everything(self):
+        self.assertEqual(sockstack.parse_uid_pids(self.PS, 10999), [])
+
+    def test_junk_is_survivable(self):
+        self.assertEqual(sockstack.parse_uid_pids('', 10132), [])
+        self.assertEqual(sockstack.parse_uid_pids(None, 10132), [])
+
+
+class MergeKernelSources(unittest.TestCase):
+    POLLED = {'uid': 10132, 'status': 'ok', 'polls_succeeded': 5,
+              'peers': [{'ip': '1.1.1.1', 'port': 443, 'proto': 'tcp',
+                         'established': True},
+                        {'ip': '8.8.8.8', 'port': 53, 'proto': 'udp',
+                         'established': True}]}
+    STREAMED = {'status': 'ok', 'event': 'sock/inet_sock_set_state',
+                'events_parsed': 3, 'pids_filtered': [1234],
+                'peers': [{'ip': '1.1.1.1', 'port': 443, 'proto': 'tcp',
+                           'established': True},
+                          {'ip': '5.6.7.8', 'port': 8080, 'proto': 'tcp',
+                           'established': False}]}
+
+    def test_both_sources_are_credited_for_an_address_both_saw(self):
+        merged = sockstack.merge_kernel_sources(self.POLLED, self.STREAMED)
+        entry = next(e for e in merged['peers'] if e['ip'] == '1.1.1.1')
+        self.assertEqual(entry['sources'], ['proc-net', 'ftrace'])
+
+    def test_what_polling_missed_is_named_as_such(self):
+        merged = sockstack.merge_kernel_sources(self.POLLED, self.STREAMED)
+        self.assertEqual([e['ip'] for e in merged['missed_by_polling']], ['5.6.7.8'])
+
+    def test_udp_survives_the_merge_even_though_the_stream_cannot_see_it(self):
+        merged = sockstack.merge_kernel_sources(self.POLLED, self.STREAMED)
+        udp = next(e for e in merged['peers'] if e['proto'] == 'udp')
+        self.assertEqual(udp['sources'], ['proc-net'])
+
+    def test_an_established_sighting_wins_over_an_attempt(self):
+        streamed = {'status': 'ok', 'peers': [
+            {'ip': '9.9.9.9', 'port': 443, 'proto': 'tcp', 'established': True}]}
+        polled = {'status': 'ok', 'peers': [
+            {'ip': '9.9.9.9', 'port': 443, 'proto': 'tcp', 'established': False}]}
+        merged = sockstack.merge_kernel_sources(polled, streamed)
+        self.assertTrue(merged['peers'][0]['established'])
+
+    def test_the_polled_artifact_is_unchanged_when_the_stream_never_ran(self):
+        merged = sockstack.merge_kernel_sources(
+            self.POLLED, {'status': 'no-tracefs', 'detail': 'x', 'peers': []})
+        self.assertEqual([e['ip'] for e in merged['peers']], ['1.1.1.1', '8.8.8.8'])
+        self.assertEqual(merged['missed_by_polling'], [])
+        self.assertEqual(merged['ftrace']['status'], 'no-tracefs')
+
+    def test_the_stream_alone_still_produces_an_artifact(self):
+        merged = sockstack.merge_kernel_sources(
+            {'uid': 10132, 'status': 'unreadable', 'peers': []}, self.STREAMED)
+        self.assertEqual(len(merged['peers']), 2)
+        self.assertEqual(len(merged['missed_by_polling']), 2)
+
+
+# Verbatim `trace_pipe` output from a Linux 6.8 kernel: one curl to example.com,
+# instance-local buffer, sock:inet_sock_set_state enabled. Kept exactly as the
+# kernel wrote it, including `<...>` for a comm that was not in the cmdline map
+# and `<idle>-0` for the transitions the kernel completes in softirq context.
+FTRACE_REAL = """\
+           <...>-2974095 [004] ..... 3794784.779392: inet_sock_set_state: family=AF_INET protocol=IPPROTO_TCP sport=0 dport=443 saddr=192.168.100.110 daddr=104.20.23.154 saddrv6=::ffff:192.168.100.110 daddrv6=::ffff:104.20.23.154 oldstate=TCP_CLOSE newstate=TCP_SYN_SENT
+          <idle>-0       [003] ..s2. 3794784.785158: inet_sock_set_state: family=AF_INET protocol=IPPROTO_TCP sport=35032 dport=443 saddr=192.168.100.110 daddr=104.20.23.154 saddrv6=::ffff:192.168.100.110 daddrv6=::ffff:104.20.23.154 oldstate=TCP_SYN_SENT newstate=TCP_ESTABLISHED
+            curl-2974095 [004] ..... 3794784.832531: inet_sock_set_state: family=AF_INET protocol=IPPROTO_TCP sport=35032 dport=443 saddr=192.168.100.110 daddr=104.20.23.154 saddrv6=::ffff:192.168.100.110 daddrv6=::ffff:104.20.23.154 oldstate=TCP_ESTABLISHED newstate=TCP_FIN_WAIT1
+          <idle>-0       [003] ..s2. 3794784.837912: inet_sock_set_state: family=AF_INET protocol=IPPROTO_TCP sport=35032 dport=443 saddr=192.168.100.110 daddr=104.20.23.154 saddrv6=::ffff:192.168.100.110 daddrv6=::ffff:104.20.23.154 oldstate=TCP_FIN_WAIT1 newstate=TCP_CLOSING
+          <idle>-0       [003] ..s2. 3794784.838126: inet_sock_set_state: family=AF_INET protocol=IPPROTO_TCP sport=35032 dport=443 saddr=192.168.100.110 daddr=104.20.23.154 saddrv6=::ffff:192.168.100.110 daddrv6=::ffff:104.20.23.154 oldstate=TCP_CLOSING newstate=TCP_CLOSE
+"""
+
+
+class FtraceAgainstRealKernelOutput(unittest.TestCase):
+    """The fixtures above this were written from the documented format. These
+    lines came off a running kernel, which is the only way to find out that the
+    format was documented differently from how it is emitted."""
+
+    def events(self):
+        return [sockstack.parse_ftrace_socket_event(line)
+                for line in FTRACE_REAL.splitlines()]
+
+    def test_the_connect_and_the_handshake_are_the_only_two_kept(self):
+        kept = [e for e in self.events() if e]
+        self.assertEqual(len(kept), 2)
+        self.assertEqual([e['established'] for e in kept], [False, True])
+
+    def test_a_comm_the_kernel_could_not_name_still_yields_its_pid(self):
+        self.assertEqual(self.events()[0]['pid'], 2974095)
+        self.assertEqual(self.events()[0]['comm'], '<...>')
+
+    def test_the_handshake_belongs_to_no_process(self):
+        # The whole reason the pid filter has to include 0: this transition is
+        # recorded in softirq context, not against the connecting task.
+        self.assertEqual(self.events()[1]['pid'], 0)
+        self.assertEqual(self.events()[1]['comm'], '<idle>')
+
+    def test_the_connect_event_has_no_source_port_yet(self):
+        # Which is why establishment cannot be correlated by source port.
+        self.assertIn('sport=0', FTRACE_REAL.splitlines()[0])
+
+
+class FtraceLedger(unittest.TestCase):
+    def ledger(self):
+        return sockstack.FtraceSocketEvents(serial=None)
+
+    def test_a_real_session_ends_as_one_established_destination(self):
+        led = self.ledger()
+        for line in FTRACE_REAL.splitlines():
+            led.note(sockstack.parse_ftrace_socket_event(line))
+        artifact = led.artifact()
+        self.assertEqual([(p['ip'], p['port'], p['established'])
+                          for p in artifact['peers']],
+                         [('104.20.23.154', 443, True)])
+        self.assertEqual(artifact['established_from_softirq'], 1)
+
+    def test_a_handshake_for_a_destination_we_never_dialled_is_ignored(self):
+        # pid 0 carries the whole device's traffic. Accepting it wholesale would
+        # hand the target every connection any app on the phone completed.
+        led = self.ledger()
+        stray = {'ip': '9.9.9.9', 'port': 443, 'proto': 'tcp',
+                 'established': True, 'pid': 0, 'comm': '<idle>'}
+        self.assertFalse(led.note(stray))
+        self.assertEqual(led.artifact()['peers'], [])
+
+    def test_an_attempt_that_is_never_completed_stays_an_attempt(self):
+        led = self.ledger()
+        led.note({'ip': '5.5.5.5', 'port': 8080, 'proto': 'tcp',
+                  'established': False, 'pid': 1234, 'comm': 'app'})
+        self.assertEqual(led.artifact()['peers'],
+                         [{'ip': '5.5.5.5', 'port': 8080, 'proto': 'tcp',
+                           'established': False}])
+
+    def test_the_same_handshake_is_not_counted_twice(self):
+        led = self.ledger()
+        dial = {'ip': '1.2.3.4', 'port': 443, 'proto': 'tcp',
+                'established': False, 'pid': 99, 'comm': 'app'}
+        done = dict(dial, established=True, pid=0, comm='<idle>')
+        led.note(dial)
+        led.note(done)
+        led.note(done)
+        self.assertEqual(led.artifact()['established_from_softirq'], 1)
+
+    def test_nothing_at_all_is_reported_as_such_not_as_success(self):
+        artifact = self.ledger().artifact()
+        self.assertEqual(artifact['status'], 'not-run')
+        self.assertEqual(artifact['peers'], [])
+
+    def test_a_running_source_that_saw_no_line_says_so(self):
+        led = self.ledger()
+        led.status = 'running'
+        artifact = led.artifact()
+        self.assertEqual(artifact['status'], 'no-events')
+        self.assertIn('produced nothing', artifact['detail'])
+
+    def test_the_artifact_states_what_the_source_cannot_see(self):
+        self.assertEqual(self.ledger().artifact()['covers'], 'tcp')

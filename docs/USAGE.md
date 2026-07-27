@@ -275,6 +275,11 @@ Two variations you will need sooner or later:
 - **`--anti-root`** for a sample that actually checks for root. Root evasion is
   **off by default** because it crashes friTap on Android 14. Turn it on only
   when the target demands it, and expect the crash if it does not.
+- **`--ftrace`** when the target may be opening connections faster than a
+  two-second poll can see them — a beacon that connects, sends and closes. It
+  streams the kernel's own TCP state changes instead of sampling, needs root, and
+  covers TCP only. The summary then says how many destinations the poll alone
+  would have missed. It adds no attribution: the kernel cannot name a Java frame.
 
 A healthy run ends like this:
 

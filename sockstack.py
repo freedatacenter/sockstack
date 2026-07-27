@@ -194,6 +194,15 @@ def priv(serial, shell_cmd, **kw):
     return adb(serial, 'shell', shell_cmd, **kw)
 
 
+def priv_stream(serial, shell_cmd):
+    """A privileged shell whose stdout is read as it arrives, for `trace_pipe`."""
+    if detect_privilege(serial) == 'su':
+        shell_cmd = f'su -c {shlex.quote(shell_cmd)}'
+    return subprocess.Popen(['adb', '-s', serial, 'shell', shell_cmd],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            text=True, bufsize=1)
+
+
 def priv_background(serial, shell_cmd):
     if detect_privilege(serial) == 'su':
         shell_cmd = f'su -c {shlex.quote(shell_cmd)}'
@@ -646,6 +655,294 @@ def parse_proc_net(text, uid):
 PROC_NET_READ = ' ; '.join(
     f'echo "== {name}" ; cat /proc/net/{name} 2>/dev/null' for name in PROC_NET_SOURCES)
 
+# --------------------------------------------------------------------------- ftrace source
+#
+# The polling check above samples; this one listens. `sock:inet_sock_set_state`
+# fires on every TCP state change in the kernel, so a connection opened and
+# closed inside a poll interval — which the poller misses and reports as nothing
+# — arrives here as two events. It needs root and nothing else: no eBPF
+# toolchain, no BTF, no kernel headers, no compiler.
+#
+# What it does NOT do is attribute. The kernel knows pid, comm and uid; it does
+# not know `com.target.SyncWorker.run`, and no amount of kernel-side tracing will
+# produce a Java frame. This is a second source for *what happened*, and the
+# tracer remains the only source for *who did it*.
+TRACEFS_ROOTS = ('/sys/kernel/tracing', '/sys/kernel/debug/tracing')
+FTRACE_INSTANCE = 'sockstack'
+FTRACE_PIDFILE = '/data/local/tmp/sockstack_ftrace.pid'
+# UDP has no state machine, so this tracepoint says nothing about it. Datagram
+# destinations still come only from the poller, and the report has to keep
+# saying so rather than implying the event stream covers everything.
+FTRACE_EVENT = 'sock/inet_sock_set_state'
+# A `comm-pid [cpu] flags timestamp: event: k=v ...` line, with the optional
+# tgid column some kernels add. comm may itself contain dashes, so the pid is
+# taken as the last dash-separated number before the CPU column.
+FTRACE_LINE = re.compile(
+    r'^\s*(?P<comm>.+)-(?P<pid>\d+)\s+(?:\(\s*[\d-]+\)\s+)?\[\d+\]'
+    r'.*?:\s*inet_sock_set_state:\s*(?P<fields>.*)$')
+
+
+def parse_ftrace_socket_event(line):
+    """One `trace_pipe` line -> a peer the target reached out to, or None.
+
+    Only outbound connections are kept, and they are recognised by where the
+    socket came *from*: CLOSE→SYN_SENT is a connect() being attempted, and
+    SYN_SENT→ESTABLISHED is the far end answering it. An inbound accept walks
+    LISTEN→SYN_RECV→ESTABLISHED, whose "peer" is whoever dialled in — counting
+    that as somewhere the target went would invent outbound traffic out of an
+    open port.
+    """
+    match = FTRACE_LINE.match(line or '')
+    if not match:
+        return None
+    fields = dict(pair.split('=', 1) for pair in match.group('fields').split()
+                  if '=' in pair)
+    old, new = fields.get('oldstate', ''), fields.get('newstate', '')
+    if new == 'TCP_SYN_SENT':
+        established = False
+    elif new == 'TCP_ESTABLISHED' and old == 'TCP_SYN_SENT':
+        established = True
+    else:
+        return None
+    # For AF_INET6 the tracepoint leaves daddr as 0.0.0.0 and puts the address in
+    # daddrv6; an IPv4-mapped v6 address is spelled back to plain IPv4 so that
+    # this and /proc/net agree on how one address is written. Disagreeing would
+    # manufacture "the tracer missed this" out of two spellings of one host.
+    v6 = fields.get('family') == 'AF_INET6'
+    ip = (fields.get('daddrv6') if v6 else fields.get('daddr')) or ''
+    ip = ip.strip('[]')
+    if ip.startswith('::ffff:'):
+        ip = ip[len('::ffff:'):]
+    try:
+        port = int(fields.get('dport', ''))
+    except ValueError:
+        return None
+    if not ip or not port or ip in ('0.0.0.0', '::'):
+        return None
+    return {'ip': ip, 'port': port, 'proto': 'tcp', 'established': established,
+            'pid': int(match.group('pid')), 'comm': match.group('comm').strip()}
+
+
+def parse_uid_pids(text, uid):
+    """`ps -A -o PID,UID` -> the pids running as `uid`.
+
+    An app is not one process. A `:remote` service is started by the system, not
+    forked from the process the tracer is in, so following forks is not enough to
+    keep the event filter pointed at the whole app.
+    """
+    pids = []
+    for line in (text or '').splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[0].isdigit() and fields[1].isdigit():
+            if int(fields[1]) == uid:
+                pids.append(int(fields[0]))
+    return pids
+
+
+class FtraceSocketEvents:
+    """Streams TCP state changes for the target's processes off the device.
+
+    Complements KernelCrossCheck rather than replacing it: this sees every TCP
+    connection as it happens but nothing about UDP, while the poller sees both
+    and only at the moments it looks.
+
+    Every failure path sets a status that names what went wrong. A source that
+    quietly produces nothing is worse than no source at all — its silence reads
+    as "the target opened no connections".
+    """
+
+    def __init__(self, serial, uid=None, pid_hint=None, interval=5):
+        self.serial = serial
+        self.uid = uid
+        self.pid_hint = pid_hint or (lambda: None)
+        self.interval = interval
+        self.root = None
+        self.status = 'not-run'
+        self.detail = ''
+        self.lines_seen = 0
+        self.events = 0
+        self.softirq_upgrades = 0
+        self.pids = []
+        self._dialled = set()
+        self._peers = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._reader = None
+        self._process = None
+        self._refresher = None
+
+    # -- lifecycle ---------------------------------------------------------
+    def start(self):
+        self.root = self._find_tracefs()
+        if not self.root:
+            self.status = 'no-tracefs'
+            self.detail = ('no readable tracefs — needs root, and a kernel built '
+                           'with ftrace')
+            print(f'[i] ftrace source off: {self.detail}')
+            return self
+        if not device_has(self.serial, f'test -e {self.root}/events/{FTRACE_EVENT}'):
+            self.status = 'no-tracepoint'
+            self.detail = f'this kernel has no {FTRACE_EVENT} tracepoint'
+            print(f'[i] ftrace source off: {self.detail}')
+            return self
+        instance = f'{self.root}/instances/{FTRACE_INSTANCE}'
+        # An instance of our own: its own buffer, its own pid filter, its own
+        # enable switches. Writing to the global ones would silently reconfigure
+        # tracing for anything else using it, and leave it that way afterwards.
+        setup = (f'mkdir -p {instance} && '
+                 f'echo 1 > {instance}/options/event-fork 2>/dev/null ; '
+                 f'echo 1 > {instance}/events/{FTRACE_EVENT}/enable')
+        if not device_has(self.serial, setup):
+            self.status = 'not-permitted'
+            self.detail = ('the tracepoint could not be enabled — SELinux or a '
+                           'read-only tracefs')
+            print(f'[i] ftrace source off: {self.detail}')
+            return self
+        self._refresh_pids()
+        self._process = priv_stream(
+            self.serial,
+            f'echo $$ > {FTRACE_PIDFILE} ; exec cat {instance}/trace_pipe')
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
+        self._refresher = threading.Thread(target=self._refresh_loop, daemon=True)
+        self._refresher.start()
+        self.status = 'running'
+        print(f'[+] ftrace source active on {FTRACE_EVENT} '
+              f'({len(self.pids) or "no"} pid(s) filtered)')
+        return self
+
+    def stop(self, timeout=5):
+        self._stop.set()
+        # The remote `cat` outlives its adb client, so it is killed by the pid it
+        # recorded for us. Killing by name would take out anyone else reading a
+        # trace_pipe on this device.
+        priv(self.serial, f'kill $(cat {FTRACE_PIDFILE} 2>/dev/null) 2>/dev/null ; '
+                          f'rm -f {FTRACE_PIDFILE}')
+        if self._process:
+            self._process.terminate()
+        for thread in (self._reader, self._refresher):
+            if thread:
+                thread.join(timeout)
+        if self.root:
+            # Leaving the tracepoint on would keep filling a buffer on a device
+            # nobody is watching any more.
+            instance = f'{self.root}/instances/{FTRACE_INSTANCE}'
+            priv(self.serial, f'echo 0 > {instance}/events/{FTRACE_EVENT}/enable '
+                              f'2>/dev/null ; rmdir {instance} 2>/dev/null')
+        return self.artifact()
+
+    # -- device plumbing ---------------------------------------------------
+    def _find_tracefs(self):
+        for root in TRACEFS_ROOTS:
+            if device_has(self.serial, f'test -d {root}/events'):
+                return root
+        return None
+
+    def _refresh_pids(self):
+        """Keep the event filter pointed at every process of the target's uid."""
+        if self.uid is None:
+            self.uid = uid_from_pid(self.serial, self.pid_hint() or 0) \
+                if self.pid_hint() else None
+        pids = []
+        if self.uid is not None:
+            listing = priv(self.serial, 'ps -A -o PID,UID 2>/dev/null').stdout or ''
+            pids = parse_uid_pids(listing, self.uid)
+        hint = self.pid_hint()
+        if hint and hint not in pids:
+            pids.append(hint)
+        if not pids or pids == self.pids:
+            return
+        self.pids = sorted(pids)
+        instance = f'{self.root}/instances/{FTRACE_INSTANCE}'
+        # pid 0 rides along on purpose. Verified on a live kernel: the
+        # CLOSE→SYN_SENT transition is recorded against the connecting task, but
+        # SYN_SENT→ESTABLISHED happens when the SYN-ACK is processed in softirq
+        # context, which ftrace attributes to `<idle>-0`. Filter it out and this
+        # source can never observe a connection succeeding — every destination
+        # would be reported as merely attempted. What comes in through pid 0 is
+        # the whole device's, so `note()` keeps only the destinations a target
+        # pid was already seen dialling.
+        priv(self.serial,
+             f'echo "0 {" ".join(str(p) for p in self.pids)}" > '
+             f'{instance}/set_event_pid')
+
+    def _refresh_loop(self):
+        while not self._stop.wait(self.interval):
+            try:
+                self._refresh_pids()
+            except Exception:                          # noqa: BLE001
+                pass          # a refresh that fails must not end the stream
+
+    def note(self, event):
+        """Take one parsed event into the ledger. True if it counted.
+
+        Two kinds arrive. An event on one of the target's pids is the target
+        dialling, and is taken at face value. An event on pid 0 is the kernel
+        finishing somebody's handshake in softirq context — it carries no
+        attribution at all, so it is used only to upgrade a destination this
+        target was already seen dialling, and never to add one.
+
+        The imprecision that remains: another process connecting to the same
+        address and port inside the same window can lend its handshake to ours.
+        That can turn "attempted" into "established" for a destination already
+        known to be the target's; it cannot invent a destination.
+        """
+        if not event:
+            return False
+        key = (event['ip'], event['port'], event['proto'])
+        if event['pid'] in (0, None):
+            with self._lock:
+                if key not in self._dialled or not event['established']:
+                    return False
+                if not self._peers.get(key):
+                    self._peers[key] = True
+                    self.softirq_upgrades += 1
+            return True
+        with self._lock:
+            self._dialled.add(key)
+            self._peers[key] = self._peers.get(key, False) or event['established']
+        return True
+
+    def _read(self):
+        stream = self._process.stdout if self._process else None
+        if stream is None:
+            return
+        for line in stream:
+            if self._stop.is_set():
+                return
+            self.lines_seen += 1
+            if self.note(parse_ftrace_socket_event(line)):
+                self.events += 1
+
+    # -- result ------------------------------------------------------------
+    def artifact(self):
+        with self._lock:
+            peers = dict(self._peers)
+        if self.status == 'running':
+            self.status = 'ok' if self.lines_seen else 'no-events'
+            if not self.lines_seen:
+                self.detail = ('the tracepoint was on and produced nothing — no '
+                               'TCP connection was made by the filtered pids, or '
+                               'the filter never matched the right ones')
+        return {
+            'status': self.status,
+            'detail': self.detail,
+            'event': FTRACE_EVENT,
+            'covers': 'tcp',          # stated, because UDP silence here means nothing
+            'pids_filtered': self.pids,
+            'lines_seen': self.lines_seen,
+            'events_parsed': self.events,
+            'established_from_softirq': self.softirq_upgrades,
+            'caveat': ('a connection is marked established only when the kernel '
+                       'was seen completing its handshake; that transition is '
+                       'recorded in softirq context with no owning pid, so it is '
+                       'matched back by address and port and could in principle '
+                       'borrow another process\'s handshake to the same peer'),
+            'peers': [{'ip': ip, 'port': port, 'proto': proto,
+                       'established': established}
+                      for (ip, port, proto), established in sorted(peers.items())],
+        }
+
 
 class KernelCrossCheck:
     """Polls the kernel's socket tables for the target's own connections.
@@ -748,6 +1045,37 @@ class KernelCrossCheck:
                        'established': established}
                       for (ip, port, proto), established in sorted(peers.items())],
         }
+
+
+def merge_kernel_sources(polled, streamed):
+    """One artifact from both kernel-side sources, saying which saw what.
+
+    They are merged rather than reported side by side because everything
+    downstream asks the same question of them — "is this address the target's?"
+    — and two lists to consult is two chances to consult one. What must not be
+    lost is *which* source saw an address: one seen only by the event stream is
+    one the poller was too slow for, and that difference is the measurement.
+    """
+    merged = dict(polled or {})
+    entries = {}
+    for entry in (polled or {}).get('peers', []):
+        key = (entry.get('ip'), entry.get('port'), entry.get('proto', 'tcp'))
+        entries[key] = dict(entry, sources=['proc-net'])
+    for entry in (streamed or {}).get('peers', []):
+        key = (entry.get('ip'), entry.get('port'), entry.get('proto', 'tcp'))
+        if key in entries:
+            entries[key]['sources'].append('ftrace')
+            entries[key]['established'] = (entries[key].get('established')
+                                           or entry.get('established', False))
+        else:
+            entries[key] = dict(entry, sources=['ftrace'])
+    merged['peers'] = [entries[key] for key in sorted(entries, key=lambda k: tuple(
+        '' if part is None else part for part in k))]
+    merged['ftrace'] = {k: v for k, v in (streamed or {}).items() if k != 'peers'}
+    merged['missed_by_polling'] = [
+        {'ip': e['ip'], 'port': e.get('port'), 'proto': e.get('proto', 'tcp')}
+        for e in merged['peers'] if e.get('sources') == ['ftrace']]
+    return merged
 
 
 # --------------------------------------------------------------------------- analysis (pure)
@@ -1312,6 +1640,26 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
     elif not uid_blob:
         lines.append('- Kernel cross-check: no record for this run (the run predates '
                      'the check, ended before it was written, or ran with --host).')
+    # The event stream, and what polling alone would have missed. Reported even
+    # when it found nothing extra: "the poller lost nothing this run" is a
+    # measurement, and it is only a measurement if the stream was running.
+    ftrace_blob = uid_blob.get('ftrace') or {}
+    ftrace_status = ftrace_blob.get('status')
+    if ftrace_status in ('ok', 'no-events'):
+        missed = uid_blob.get('missed_by_polling') or []
+        lines.append(
+            f'- Kernel event stream (`{ftrace_blob.get("event")}`, TCP only): '
+            f'{ftrace_blob.get("events_parsed", 0)} connection event(s) on '
+            f'{len(ftrace_blob.get("pids_filtered") or [])} pid(s); '
+            f'{len(missed)} destination(s) that the 2-second poll missed. '
+            f'UDP is outside this source — its silence there means nothing.')
+        for entry in missed:
+            lines.append(f'  - seen only by the event stream: '
+                         f'`{format_peer(entry["ip"], entry.get("port"))}`')
+    elif ftrace_status and ftrace_status != 'not-run':
+        lines.append(f'- **Kernel event stream did not run** ({ftrace_status}): '
+                     f'{ftrace_blob.get("detail") or "no detail"}. Short-lived '
+                     f'connections may therefore be missing from everything below.')
     if uid_blob.get('shared_with'):
         lines.append(f'- **UID {uid_blob.get("uid")} is shared with '
                      f'{", ".join(uid_blob["shared_with"])}** — the cross-check '
@@ -1558,6 +1906,11 @@ def parse_args(argv=None):
                          "crash friTap's own script on Android 14)")
     ap.add_argument('--no-anti-root', dest='anti_root', action='store_false',
                     help="force friTap's root-evasion hooks off")
+    ap.add_argument('--ftrace', action='store_true',
+                    help='also stream TCP state changes from the kernel '
+                         '(sock:inet_sock_set_state) instead of only sampling '
+                         '/proc/net. Needs root; catches connections too short '
+                         'to be caught by polling. TCP only — UDP has no states.')
     ap.add_argument('--keep-device-artifacts', action='store_true',
                     help='do not delete the capture file from the device afterwards')
     ap.add_argument('--no-postprocess', action='store_true', help='capture only')
@@ -1642,13 +1995,18 @@ def main():
     # Second view of the target's traffic, taken from the kernel rather than from
     # libc, so that a payload bypassing libc cannot pass for another app.
     cross_check = None
+    ftrace = None
     if not args.host:
+        # Attaching by label leaves nothing for the package manager to match, so
+        # fall back to the UID of whatever process the tracer is in.
+        def traced_pid():
+            return next((r.get('pid') for r in plugin.records if r.get('pid')), None)
+
         cross_check = KernelCrossCheck(
-            args.device, args.package,
-            # Attaching by label leaves nothing for the package manager to match,
-            # so fall back to the UID of whatever process the tracer is in.
-            pid_hint=lambda: next((r.get('pid') for r in plugin.records
-                                   if r.get('pid')), None)).start()
+            args.device, args.package, pid_hint=traced_pid).start()
+        if args.ftrace:
+            ftrace = FtraceSocketEvents(args.device, uid=cross_check.uid,
+                                        pid_hint=traced_pid).start()
 
     print(f'[+] collecting for {args.duration}s (Ctrl-C to stop early) — '
           f'drive the app so it actually reaches the network')
@@ -1693,8 +2051,11 @@ def main():
     # succeeding.
     if cross_check is not None:
         try:
+            artifact = cross_check.stop()
+            if ftrace is not None:
+                artifact = merge_kernel_sources(artifact, ftrace.stop())
             with open(os.path.join(args.output, 'uid_sockets.json'), 'w') as out:
-                json.dump(cross_check.stop(), out, indent=2)
+                json.dump(artifact, out, indent=2)
         except Exception as exc:                        # noqa: BLE001
             print(f'[!] kernel cross-check result not written: {exc}')
 

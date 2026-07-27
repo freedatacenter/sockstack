@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Added — `--ftrace`, a kernel event stream beside the poller (prototype)
+
+The `/proc/net` cross-check samples every two seconds, so a connection that
+opens and closes between two polls is missed by it and by everything else. This
+subscribes to `sock:inet_sock_set_state` in a tracing instance of its own and
+reads the events as they happen. Root is the only requirement — no eBPF
+toolchain, no BTF, no compiler, nothing pushed to the device.
+
+It is a second source for *what happened*, not for *who did it*. The kernel
+knows pid, comm and uid; it does not know `com.target.SyncWorker.run`, and no
+kernel-side source ever will. Attribution stays where it is.
+
+TCP only, and the artifact says so, because UDP has no state machine to observe
+and silence here would otherwise read as "no datagrams were sent".
+
+Both kernel sources merge into one `uid_sockets.json`, each destination carrying
+which source saw it, and the summary reports how many destinations polling
+missed. That number is the point of the prototype: it says whether the gap is
+worth closing with something heavier.
+
+Found while building it, on a live kernel rather than from documentation: the
+connect transition is recorded against the calling task, but the handshake
+completing is recorded against `<idle>-0`, in softirq context. A pid filter — the
+only thing keeping this from collecting the whole device — therefore hides every
+successful connection and leaves nothing but attempts. `set_event_pid` accepts
+`0`, which brings the handshakes back device-wide, so they are used only to
+upgrade destinations one of the target's own pids was already seen dialling. The
+imprecision that leaves is stated in the artifact: a concurrent connection to the
+same address and port can lend its handshake to the target's, promoting
+"attempted" to "established" — it cannot invent a destination. `docs/GOTCHAS.md`
+carries the capture this came from.
+
+**Not yet run against a device.** The parser is tested against verbatim kernel
+output; the plumbing around it — tracefs discovery under SELinux, the pid filter,
+the teardown — has not been exercised on Android.
+
 ### Added — an optional web front-end (`ui/`)
 
 Reworked to a hi-fi design: a launch screen that picks the device, and a

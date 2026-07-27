@@ -321,6 +321,36 @@ animating, and returns an error rather than an empty screen. That is temporary
 and normal; the UI says so instead of drawing an empty overlay, which would read
 as "nothing here is clickable".
 
+## The kernel completes a handshake with nobody's pid
+
+`sock:inet_sock_set_state` looks like it hands you a connection with its owner
+attached. It does, once. Captured on Linux 6.8, one `curl` to one host:
+
+```
+ <...>-2974095 [004] ..... inet_sock_set_state: ... sport=0     dport=443 daddr=104.20.23.154 oldstate=TCP_CLOSE     newstate=TCP_SYN_SENT
+<idle>-0       [003] ..s2. inet_sock_set_state: ... sport=35032 dport=443 daddr=104.20.23.154 oldstate=TCP_SYN_SENT  newstate=TCP_ESTABLISHED
+```
+
+The connect is recorded against the calling task. The **handshake completing is
+recorded against `<idle>-0`** — the SYN-ACK is processed in softirq context, and
+ftrace attributes it to whatever the CPU was doing, which is nothing. Filter
+`set_event_pid` down to the target's pids, as you must to avoid collecting the
+whole device, and every destination is reported as *attempted* and none as
+*established*.
+
+Two more details from the same capture, both of which break the obvious fixes:
+
+- the connect event carries `sport=0` — the source port is not assigned yet — so
+  the two events cannot be correlated by their source port;
+- `set_event_pid` does accept `0`, and with it in the list the handshake events
+  arrive. They arrive for the whole device, so they are only usable to upgrade a
+  destination one of the target's own pids was already seen dialling.
+
+That last is what sockstack does, and it is imprecise in one stated direction: a
+second process connecting to the same address and port in the same window can
+lend its handshake to the target's. It can promote "attempted" to "established";
+it cannot invent a destination.
+
 ## `adb connect` exits 0 when it fails
 
 ```

@@ -281,6 +281,18 @@ Read these before trusting an empty result.
   does not remove it. It reports its own state as well — an unresolved UID, an
   unreadable `/proc/net`, or a UID shared with other packages — so that a clean
   result cannot be confused with a check that never ran.
+
+  `--ftrace` closes the sampling half of that gap: it streams
+  `sock:inet_sock_set_state` off the kernel through a tracing instance of its
+  own, so a TCP connection opened and closed between two polls arrives as
+  events rather than not at all. Root, and nothing else — no eBPF toolchain, no
+  BTF, no compiler. **TCP only**: UDP has no state machine, so datagram
+  destinations still come from polling alone and this source's silence about
+  them means nothing. The summary names how many destinations the poll missed,
+  which is the measurement worth having before reaching for anything heavier.
+  What it does not do is attribute: the kernel knows pid, comm and uid, never
+  `com.target.SyncWorker.run`. Attribution stays with the tracer, and no
+  kernel-side source will change that.
 - **Native threads have no Java stack.** Cronet's network thread, JNI code and
   non-JVM runtimes produce records with no attribution. Those peers are listed
   separately in the summary rather than silently dropped — and separately from
