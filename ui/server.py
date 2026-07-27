@@ -26,6 +26,7 @@ the right way to use it from another machine is an SSH tunnel:
 `--bind` exists for the cases where that is impractical, and says what it costs.
 """
 import argparse
+import errno
 import json
 import os
 import re
@@ -703,7 +704,16 @@ def main():
               f'reach it controls the device. Prefer an SSH tunnel:\n'
               f'    ssh -L {args.port}:127.0.0.1:{args.port} <user>@<this host>')
 
-    server = ThreadingHTTPServer((args.bind, args.port), Handler)
+    try:
+        server = ThreadingHTTPServer((args.bind, args.port), Handler)
+    except OSError as exc:
+        # Starting it twice is the ordinary mistake — over a tunnel, one already
+        # runs on the far end. A traceback for that reads like a broken tool.
+        if exc.errno == errno.EADDRINUSE:
+            sys.exit(f'[!] port {args.port} is already in use. A panel is probably '
+                     f'running here already — open http://127.0.0.1:{args.port}, or '
+                     f'start this one with --port on a free number.')
+        sys.exit(f'[!] could not listen on {args.bind}:{args.port}: {exc.strerror}')
     print(f'[+] sockstack ui on http://{args.bind}:{args.port}')
     try:
         server.serve_forever()
