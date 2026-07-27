@@ -390,9 +390,9 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == '/api/packages':
                 return self._send(200, self._packages(serial))
             if url.path == '/api/screen':
-                ok, png = adb(serial, 'exec-out', 'screencap', '-p', binary=True)
-                if not ok or not png.startswith(b'\x89PNG'):
-                    return self._send(503, {'error': 'screencap failed'})
+                png, why = self._screencap(serial)
+                if not png:
+                    return self._send(503, {'error': why or 'screencap failed'})
                 return self._send(200, png, 'image/png')
             if url.path == '/api/elements':
                 return self._send(200, self._elements(serial))
@@ -447,6 +447,30 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {'error': f'{type(exc).__name__}: {exc}'})
 
     # -- endpoint bodies ---------------------------------------------------
+    def _screencap(self, serial):
+        """(png, error). Empty PNG with the reason, never a bare failure.
+
+        `adb exec-out` is the fast path and usually correct, but this codebase
+        already documents it mixing the remote process's stderr into the binary
+        stream (see docs/GOTCHAS.md, where it corrupted pcaps). A header check
+        alone would not notice junk in the middle, so the whole frame is checked
+        for its terminating IEND chunk, and anything that fails falls back to
+        writing on the device and pulling the file — the same fix the pcap path
+        uses, at the cost of a round trip.
+        """
+        ok, png = adb(serial, 'exec-out', 'screencap', '-p', binary=True)
+        if ok and png.startswith(b'\x89PNG\r\n\x1a\n') and png.rstrip().endswith(b'IEND\xaeB`\x82'):
+            return png, ''
+        remote = '/sdcard/sockstack_ui_screen.png'
+        ok, why = adb(serial, 'shell', f'screencap -p {remote}')
+        if not ok:
+            return b'', (why or 'screencap failed on the device').strip()[:200]
+        ok, png = adb(serial, 'exec-out', 'cat', remote, binary=True)
+        adb(serial, 'shell', f'rm -f {remote}')
+        if ok and png.startswith(b'\x89PNG'):
+            return png, ''
+        return b'', 'the device produced no readable PNG'
+
     def _device_info(self, serial):
         ok, props = adb(serial, 'shell',
                         'getprop ro.build.version.release ; '
@@ -561,6 +585,12 @@ def main():
                     help='interface to listen on (default loopback; anything else '
                          'exposes device control to that network — see below)')
     args = ap.parse_args()
+    # Block buffering would hold these until the process exits — which for a
+    # server means never. One of them warns that the device is exposed.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except AttributeError:                              # pragma: no cover
+        pass
 
     if not shutil.which('adb'):
         print('[!] adb is not in PATH — device features will not work')

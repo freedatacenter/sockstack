@@ -41,6 +41,27 @@ needed only if you want to rebuild it.
 
 ---
 
+## The same walkthrough, with a mouse
+
+```bash
+python3 ui/server.py            # http://127.0.0.1:8722
+```
+
+Optional, standard library only, and it runs exactly these commands. It collapses
+steps 3 to 5: pick a device from a list that says what each one is, install an
+APK and be told the package name it registered under, start the run, and drive
+the target by clicking its buttons instead of computing tap coordinates.
+
+What it does **not** replace is step 6. The findings panel renders the same
+conclusions — it calls the same code — but knowing what `not-examined` licenses
+you to say, and what it does not, is the part of this tool that matters. Read
+step 6 whichever way you drive the rest.
+
+It has no authentication and it controls the device; it binds to loopback, and
+the intended remote use is `ssh -L 8722:127.0.0.1:8722 user@analysis-host`.
+
+---
+
 ## Step 2 — check the toolchain before involving a device
 
 This runs against an ordinary local process. It proves that friTap starts, that
@@ -214,6 +235,12 @@ idle app. Tap, scroll, log in — whatever makes it reach the network:
 ```bash
 adb -s emulator-5554 shell input tap 540 1800
 ```
+
+Those coordinates are the awkward part. Finding them means dumping the view
+hierarchy, reading XML and computing the centre of the element you want, and a
+tap that lands beside the button rather than on it costs the whole run. If you
+would rather click the button, that is what the web UI above is for — it outlines
+the clickable nodes by resource id and taps their centres for you.
 
 Two variations you will need sooner or later:
 

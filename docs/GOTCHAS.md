@@ -308,6 +308,19 @@ The file starts with `tcpdump: data link type LINUX_SLL2` and then fails with
 `pcap_loop: invalid packet capture length 1936288800` — that number is the ASCII
 `sock`. Write to a file on the device and `adb pull` it.
 
+## The web UI takes screenshots through the same corruptible channel
+
+`adb exec-out screencap -p` has the problem above in miniature: a device whose
+`screencap` writes anything to stderr produces a PNG with junk spliced into it,
+and a header check will not notice — the file starts correctly and fails later,
+in the decoder. The UI checks the terminating `IEND` chunk as well, and falls
+back to writing on the device and pulling the file when that fails.
+
+Related: `uiautomator dump` has no stable hierarchy to give while the screen is
+animating, and returns an error rather than an empty screen. That is temporary
+and normal; the UI says so instead of drawing an empty overlay, which would read
+as "nothing here is clickable".
+
 ## Root differs: emulator vs phone
 
 - **Emulator / userdebug:** `adb root`, and the shell is already root.

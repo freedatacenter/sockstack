@@ -169,20 +169,40 @@ python3 ui/server.py            # http://127.0.0.1:8722
 ```
 
 Standard library only — nothing to install, and nothing added to the CLI's
-dependencies for people who do not want it. It starts ordinary `sockstack.py`
-runs whose artifacts land in ordinary directories, so nothing done here becomes
-undoable elsewhere.
+dependencies for people who do not want it. Every run it starts is an ordinary
+`sockstack.py` invocation into an ordinary output directory, so nothing done here
+becomes unavailable without it.
 
-It exists mainly for one thing: **driving the target**. Reaching the network
-usually means touching the app, and from a terminal that is `input tap 797 1284`
-— coordinates obtained by dumping the view hierarchy, parsing XML and computing a
-centre by hand. The page shows the device's screen with the clickable elements
-outlined, so you click `installUpdateBtn`, not a pixel. It also lists attached
-devices, installs an APK and tells you the package name it registered under,
-launches the target, and streams the run log.
+**Launch screen.** Attached devices with what they actually are — Android
+version, ABI, build type, whether `frida-server` is up — and devices that are
+present but unauthorized listed as such rather than omitted. Alongside them, past
+runs found under a directory you name, described by what they recorded: call
+sites, records, whether the Java bridge worked. Never "clean" — a run that found
+nothing and a run whose bridge failed look identical from outside, and only one
+of those is reassuring.
 
-**It has no authentication and it controls the device.** It binds to loopback;
-reach it from another machine with a tunnel rather than `--bind`:
+**Workspace.** The device screen on the left, the findings in the middle, the log
+along the bottom.
+
+The screen is the reason to use it at all. Reaching the network means touching
+the app, and from a terminal that is `input tap 797 1284` — coordinates obtained
+by dumping the view hierarchy, parsing XML and computing a centre by hand, slow
+and wrong often enough to cost a run. Here the clickable nodes are outlined by
+their resource id, so you click `installUpdateBtn` rather than aiming at a point,
+and the click still lands on a device with a different screen size.
+
+The findings panel calls the CLI's own `summarize_trace`. There is no second
+implementation of "attributed", so the page and the written report cannot drift
+apart. Peer colour says **how well the call site is known** — green when the
+stack names application code, neutral for library-only and native threads, amber
+for destinations nobody examined and for a Java bridge that was not working. It
+does not say how suspicious an address looks: this tool cannot tell a C2 from a
+CDN, and a red badge implying otherwise would be exactly the kind of confident
+wrong answer the rest of the design works to avoid.
+
+**It has no authentication and it controls the device** — it installs APKs and
+runs adb commands for anyone who can reach it. It binds to loopback; reach it
+from another machine with a tunnel rather than `--bind`:
 
 ```bash
 ssh -L 8722:127.0.0.1:8722 user@analysis-host
