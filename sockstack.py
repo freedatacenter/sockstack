@@ -1447,9 +1447,29 @@ def suggest_process_names(args):
         print(f'    (could not list processes on the device: {exc})')
         return
     needle = (args.package or '').lower()
+
+    # Ask Frida what it calls this identifier rather than guessing from the
+    # string. The label and the package name have nothing in common — `MAX` for
+    # `ru.oneme.app` — so no amount of substring matching finds it, while a
+    # short stem finds the wrong thing: `app` from `ru.oneme.app` matches
+    # `com.google.android.apps.nexuslauncher`, which is offered as the answer.
+    try:
+        running = [app for app in device.enumerate_applications()
+                   if (app.identifier or '').lower() == needle and app.pid]
+    except Exception:                                       # noqa: BLE001
+        running = []
+    if running:
+        print('    That app is running, but Frida knows it by its label:')
+        for app in running[:5]:
+            print(f'      --package "{app.name}"    (pid {app.pid}, {app.identifier})')
+        return
+
+    # Fallback for a process that belongs to no installed application. A stem
+    # has to be long enough to mean something before it is worth offering.
     stem = needle.rsplit('.', 1)[-1]
     likely = [p for p in processes
-              if needle in p.name.lower() or (stem and stem in p.name.lower())]
+              if needle in p.name.lower()
+              or (len(stem) >= 4 and stem in p.name.lower())]
     if likely:
         print('    Frida knows these processes by a different name — try one of:')
         for proc in likely[:10]:

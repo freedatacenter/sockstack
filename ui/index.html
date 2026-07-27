@@ -294,6 +294,7 @@
     <span class="pill lang" data-lang-switch>EN · RU</span>
     <span class="pill" id="statusPill"><span class="dot"
           style="background:var(--dim)"></span><span id="statusText"></span></span>
+    <span class="status" id="runStatus" style="margin:0"></span>
     <button class="btn primary" id="start" data-i18n="act.start"></button>
     <button class="btn" id="stop" disabled data-i18n="act.stop"></button>
   </div>
@@ -806,6 +807,7 @@ async function loadRuns() {
     </div>`).join('');
   [...list.children].forEach(node => node.onclick = () => {
     $('output').value = node.dataset.dir;
+    outputIsAuto = false;                  // this directory was chosen, not guessed
     showWorkspace(); loadFindings();
   });
 }
@@ -841,12 +843,17 @@ async function pollLog() {
 }
 
 $('start').onclick = async () => {
+  if (!$('output').value.trim()) { outputIsAuto = true; fillOutputIfUntouched(); }
   $('log').innerHTML = ''; since = 0;
+  say('runStatus', '');
   const data = await post('/api/run', {
     device: dev(), package: $('package').value, output: $('output').value,
     duration: $('duration').value, attach: $('attach').checked,
     anti_root: $('antiRoot').checked});
-  if (!data.ok) say('deviceStatus', data.message, true);
+  // Next to the button that was pressed. This message used to go to the status
+  // line at the foot of the other column, which made a refusal look like a
+  // button that does nothing.
+  if (!data.ok) { say('runStatus', data.message, true); $('output').focus(); }
 };
 $('stop').onclick = () => post('/api/stop');
 
@@ -979,10 +986,27 @@ $('provision').onclick = async () => {
   if (data.ok) showWorkspace();
 };
 
+// ---- where the run lands ---------------------------------------------------
+// A run needs an output directory, and making someone invent a path before
+// anything can happen is friction that buys nothing. Named after the target and
+// the minute, so two runs never land on top of each other.
+function suggestedOutput() {
+  const name = ($('package').value || 'run').split('.').filter(Boolean).pop();
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+  return `./run-${name}-${stamp}`;
+}
+// Filled only while nobody else has claimed the field. Guessing from the name
+// would silently redirect someone who opened a past run from the launch screen.
+let outputIsAuto = true;
+function fillOutputIfUntouched() {
+  if (outputIsAuto) $('output').value = suggestedOutput();
+}
+
 // ---- view switching -------------------------------------------------------
 function showWorkspace() {
   $('launchView').classList.add('hidden');
   $('workView').classList.remove('hidden');
+  fillOutputIfUntouched();
   refreshScreen(); loadFindings();
 }
 function onDeviceChange() { markSelected(); loadPackages(); refreshScreen(); loadDeviceInfo(); }
@@ -996,6 +1020,8 @@ $('backToLaunch').onclick = () => {
 };
 $('rescan').onclick = loadDevices;
 $('device').onchange = onDeviceChange;
+$('package').onchange = fillOutputIfUntouched;
+$('output').oninput = () => { outputIsAuto = false; };
 $('reloadPkgs').onclick = loadPackages;
 $('refreshScreen').onclick = refreshScreen;
 $('runsRoot').onchange = loadRuns;
