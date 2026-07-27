@@ -523,3 +523,25 @@ class RenderBody(unittest.TestCase):
 
     def test_an_empty_body_is_not_called_binary(self):
         self.assertFalse(server.render_body(b'')['binary'])
+
+
+class FindingsDoNotRedrawThemselves(unittest.TestCase):
+    """The panel used to reload every three idle seconds. Rebuilding it discards
+    any drawer the reader has opened, so opening one and having a poll land
+    immediately after looked like the drawer closing itself."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(INDEX, encoding='utf-8') as fh:
+            cls.page = fh.read()
+
+    def test_the_poll_reloads_only_on_the_edge_out_of_running(self):
+        poll = self.page.split('async function pollLog', 1)[1].split('\n}', 1)[0]
+        self.assertIn('wasRunning && !RUN_RUNNING', poll)
+        # the unconditional form that caused it
+        self.assertNotIn("if (!data.running && data.output && data.output ===", poll)
+
+    def test_an_identical_redraw_touches_nothing(self):
+        findings = self.page.split('async function loadFindings', 1)[1].split('\n}', 1)[0]
+        self.assertIn('box.dataset.rendered === rendered', findings)
+        self.assertIn('box.dataset.rendered = rendered', findings)

@@ -844,7 +844,7 @@ async function loadFindings() {
       ? `<div class="empty" style="margin-bottom:12px;color:var(--warn)">` +
         `${t('cross.bad', esc(cross.status))}</div>`
       : '';
-  box.innerHTML = crossLine + ((data.cards || []).map(card => {
+  const rendered = crossLine + ((data.cards || []).map(card => {
     const frames = card.sites.map(s => {
       const app = (s.app || []).map(f =>
         `<div>${esc(f).replace(/(\(.*\))$/, '<span class="src">$1</span>')}</div>`).join('');
@@ -866,6 +866,11 @@ async function loadFindings() {
       <div class="drawer hidden"></div>
     </div>`;
   }).join('') || `<div class="empty">${t('findings.noPeers')}</div>`);
+  // An identical redraw is not free: it discards open drawers and their loaded
+  // contents. If the findings have not changed, neither should the page.
+  if (box.dataset.rendered === rendered) return;
+  box.dataset.rendered = rendered;
+  box.innerHTML = rendered;
   // The traffic opens under the call site it belongs to. Anywhere else and the
   // reader has to hold "which card did I click" in their head while looking
   // somewhere it is not written down.
@@ -973,6 +978,7 @@ async function pollLog() {
     if (atBottom) log.scrollTop = log.scrollHeight;
     since = data.next;
   }
+  const wasRunning = RUN_RUNNING;
   RUN_RUNNING = !!data.running;
   $('stop').disabled = !data.running;
   $('start').disabled = !!data.running;
@@ -982,7 +988,10 @@ async function pollLog() {
     data.running ? 'var(--accent)' : 'var(--dim)';
   $('statusText').textContent = data.running
     ? `${t('st.running')} · ${data.elapsed}s` : t('st.idle');
-  if (!data.running && data.output && data.output === $('output').value) loadFindings();
+  // Only on the edge from running to finished. Reloading on every idle poll
+  // rebuilt the whole panel every three seconds, which threw away any drawer
+  // the reader had just opened -- it looked like the drawer closing itself.
+  if (wasRunning && !RUN_RUNNING && data.output === $('output').value) loadFindings();
   setTimeout(pollLog, data.running ? 1000 : 3000);
 }
 
