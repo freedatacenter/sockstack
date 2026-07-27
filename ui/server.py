@@ -16,9 +16,9 @@ than a guess at where the button is.
 
     python3 ui/server.py                 # http://127.0.0.1:8722
 
-Security, stated plainly rather than assumed: this server runs adb commands and
-installs APKs on the attached device. Anyone who can reach it can do the same.
-There is no authentication. It binds to loopback only unless told otherwise, and
+Security, stated plainly rather than assumed: this server runs adb commands,
+accepts file uploads and installs APKs on the attached device. Anyone who can
+reach it can do the same. There is no authentication. It binds to loopback only unless told otherwise, and
 the right way to use it from another machine is an SSH tunnel:
 
     ssh -L 8722:127.0.0.1:8722 user@analysis-host
@@ -33,6 +33,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections import deque
@@ -51,6 +52,20 @@ SETUP_DEVICE = os.path.join(ROOT, 'setup-device.sh')
 # Enough history that a long run stays readable, bounded so a chatty target
 # cannot exhaust memory on the analysis host.
 LOG_LINES = 4000
+# The browser is often not on the machine holding the APK — the usual shape is a
+# laptop tunnelled into the stand. A path field alone only works for files that
+# are already on the analysis host, so uploads land here and are installed from
+# here. Kept out of the output directory: this is transport, not evidence.
+UPLOAD_DIR = os.path.join(tempfile.gettempdir(), 'sockstack-ui-uploads')
+MAX_UPLOAD = 1024 * 1024 * 1024
+
+
+def safe_upload_name(raw):
+    """A filename from the browser is attacker-adjacent input; keep the basename
+    and nothing that could climb out of UPLOAD_DIR."""
+    name = os.path.basename((raw or '').strip().replace('\\', '/'))
+    name = re.sub(r'[^A-Za-z0-9._-]', '_', name).lstrip('.')
+    return name[:120] or 'upload.apk'
 
 
 # --------------------------------------------------------------------------- adb plumbing
@@ -413,9 +428,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         url = urlparse(self.path)
-        data = self._body()
-        serial = data.get('device') or None
         try:
+            # Routed before _body(): the payload is an APK, not JSON, and reading
+            # a few hundred megabytes into a string to fail json.loads on it would
+            # be a poor way to find that out.
+            if url.path == '/api/upload':
+                return self._upload()
+            data = self._body()
+            serial = data.get('device') or None
             if url.path == '/api/tap':
                 ok, out = adb(serial, 'shell', 'input', 'tap',
                               str(int(data['x'])), str(int(data['y'])))
@@ -518,6 +538,30 @@ class Handler(BaseHTTPRequestHandler):
         ok, listing = adb(serial, 'shell', 'pm list packages -3')
         return {line.strip()[len('package:'):] for line in (listing or '').splitlines()
                 if line.strip().startswith('package:')} if ok else set()
+
+    def _upload(self):
+        length = int(self.headers.get('Content-Length') or 0)
+        if length <= 0:
+            return self._send(400, {'ok': False, 'error': 'empty upload'})
+        if length > MAX_UPLOAD:
+            return self._send(413, {'ok': False, 'error': 'file larger than 1 GiB'})
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        path = os.path.join(UPLOAD_DIR, safe_upload_name(self.headers.get('X-Filename')))
+        remaining = length
+        with open(path, 'wb') as fh:
+            while remaining > 0:
+                chunk = self.rfile.read(min(1 << 20, remaining))
+                if not chunk:
+                    break
+                fh.write(chunk)
+                remaining -= len(chunk)
+        if remaining > 0:
+            # A truncated APK does install-and-fail with a parse error that reads
+            # like a broken sample rather than a broken transfer. Say which it is.
+            os.remove(path)
+            return self._send(400, {'ok': False,
+                                    'error': f'upload ended {remaining} bytes early'})
+        return self._send(200, {'ok': True, 'path': path, 'bytes': length})
 
     def _install(self, serial, path):
         if not path or not os.path.isfile(path):

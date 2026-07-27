@@ -181,6 +181,21 @@ sites, records, whether the Java bridge worked. Never "clean" — a run that fou
 nothing and a run whose bridge failed look identical from outside, and only one
 of those is reassuring.
 
+**Installing the target.** Second card on the launch screen: drop an APK on it,
+or give a path already on the analysis host. The upload matters when the browser
+is not on the machine holding the device — the usual shape, a laptop tunnelled
+into the stand — and the file is sent to the host running `adb`, not to anywhere
+else. Installing from here is worth a step of its own for one reason: the package
+name. It is read from the difference in `pm list packages` either side of the
+install and filled into the target selector, and the APK's filename would not
+have told you it. The same field sits above the screen mirror for an APK you
+decide to install mid-session.
+
+**Language.** `EN · RU` in the top bar switches the interface and is remembered.
+Only the interface: adb's output, sockstack's log and the findings text stay in
+the words the tool produced them in, because a translated error message is no
+longer the error message.
+
 **Workspace.** The device screen on the left, the findings in the middle, the log
 along the bottom.
 
@@ -200,8 +215,8 @@ does not say how suspicious an address looks: this tool cannot tell a C2 from a
 CDN, and a red badge implying otherwise would be exactly the kind of confident
 wrong answer the rest of the design works to avoid.
 
-**It has no authentication and it controls the device** — it installs APKs and
-runs adb commands for anyone who can reach it. It binds to loopback; reach it
+**It has no authentication and it controls the device** — it accepts file
+uploads, installs APKs and runs adb commands for anyone who can reach it. It binds to loopback; reach it
 from another machine with a tunnel rather than `--bind`:
 
 ```bash

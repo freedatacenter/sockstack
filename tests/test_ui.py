@@ -197,3 +197,87 @@ class AttributionCards(unittest.TestCase):
                      ' '.join(label for label, _ in server.PEER_KINDS.values())
         for word in ('c2', 'malicious', 'suspicious', 'threat', 'clean', 'safe'):
             self.assertNotIn(word, vocabulary.lower())
+
+
+# --------------------------------------------------------------------------- uploads
+
+import re          # noqa: E402
+
+
+class SafeUploadName(unittest.TestCase):
+    """The filename comes from a browser, and the file it names is written to
+    disk on the analysis host. Everything else here is about being right; this
+    one is about not being climbed out of."""
+
+    def test_an_ordinary_name_survives(self):
+        self.assertEqual(server.safe_upload_name('target.apk'), 'target.apk')
+
+    def test_a_path_is_reduced_to_its_basename(self):
+        self.assertEqual(server.safe_upload_name('/etc/cron.d/target.apk'), 'target.apk')
+
+    def test_a_windows_path_is_reduced_too(self):
+        self.assertEqual(server.safe_upload_name(r'C:\Users\a\target.apk'), 'target.apk')
+
+    def test_traversal_cannot_survive_in_any_form(self):
+        for hostile in ('../../etc/passwd', '..', '....//evil.apk', '/../../x.apk'):
+            self.assertNotIn('/', server.safe_upload_name(hostile))
+            self.assertFalse(server.safe_upload_name(hostile).startswith('.'))
+
+    def test_an_empty_name_still_produces_a_file(self):
+        self.assertEqual(server.safe_upload_name(''), 'upload.apk')
+        self.assertEqual(server.safe_upload_name(None), 'upload.apk')
+
+    def test_a_long_name_is_bounded(self):
+        self.assertLessEqual(len(server.safe_upload_name('a' * 400 + '.apk')), 120)
+
+    def test_the_result_joins_to_a_path_inside_the_upload_directory(self):
+        for hostile in ('../../etc/passwd', '/tmp/evil', 'ok.apk'):
+            joined = os.path.join(server.UPLOAD_DIR, server.safe_upload_name(hostile))
+            self.assertEqual(os.path.dirname(os.path.abspath(joined)),
+                             os.path.abspath(server.UPLOAD_DIR))
+
+
+# --------------------------------------------------------------------------- the page
+
+INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ui', 'index.html')
+
+
+class Translations(unittest.TestCase):
+    """Both languages come from one table in the page. A key present in one and
+    missing from the other does not fail loudly — it renders the key itself, so
+    the user reads `install.dropSub` where a sentence should be."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(INDEX, encoding='utf-8') as fh:
+            cls.page = fh.read()
+
+    def table(self, lang):
+        body = self.page.split(f'  {lang}: {{', 1)[1].split('\n  },', 1)[0]
+        return set(re.findall(r"^\s*'([\w.]+)':", body, re.M))
+
+    def test_both_languages_define_the_same_keys(self):
+        self.assertEqual(self.table('en'), self.table('ru'))
+        self.assertGreater(len(self.table('en')), 40)
+
+    def test_every_key_the_markup_asks_for_exists(self):
+        used = set(re.findall(r'data-i18n(?:-ph|-title)?="([\w.]+)"', self.page))
+        self.assertTrue(used)
+        self.assertEqual(used - self.table('en'), set())
+
+    def test_every_key_the_script_asks_for_exists(self):
+        used = set(re.findall(r"\bt\('([\w.]+)'", self.page))
+        self.assertTrue(used)
+        self.assertEqual(used - self.table('en'), set())
+
+    def test_the_apk_can_be_chosen_from_both_screens(self):
+        # The complaint that produced this: the install controls existed, but
+        # only below a phone-sized frame on the second screen, where nobody
+        # scrolled to find them.
+        launch = self.page.split('id="launchView"', 1)[1].split('id="workView"', 1)[0]
+        work = self.page.split('id="workView"', 1)[1]
+        self.assertIn('id="apkDrop"', launch)
+        self.assertIn('id="install"', launch)
+        self.assertIn('id="install2"', work)
+        # …and above the mirror, not under it.
+        self.assertLess(work.index('id="install2"'), work.index('id="stage"'))

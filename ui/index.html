@@ -48,6 +48,9 @@
   .pill.live { color: var(--accent); border-color: var(--accent);
                background: rgba(127,196,160,.08); }
   .pill.live .dot { animation: pulse 1.4s ease-in-out infinite; }
+  .pill.lang { cursor: pointer; color: var(--faint); letter-spacing: .04em; }
+  .pill.lang:hover { color: var(--mid); border-color: var(--accent); }
+  .pill.lang b { color: var(--accent); font-weight: 600; }
   .btn { cursor: pointer; background: var(--raised); border: 1px solid var(--line);
          color: var(--mid); font-weight: 500; padding: 11px 18px; border-radius: 9px; }
   .btn:hover { border-color: var(--accent); }
@@ -84,6 +87,13 @@
   .device .meta { font-size: 12px; color: var(--dim); margin-top: 4px; }
   .state { font: 600 11px/1 var(--mono); letter-spacing: .04em; display: flex;
            align-items: center; gap: 6px; }
+  .drop { border: 1px dashed var(--line); border-radius: 10px; padding: 22px 16px;
+          text-align: center; cursor: pointer; background: var(--sunken);
+          transition: border-color .12s, background .12s; }
+  .drop:hover, .drop.over { border-color: var(--accent);
+                            background: rgba(127,196,160,.06); }
+  .drop-main { font-size: 13px; color: var(--mid); line-height: 1.5; }
+  .drop-sub { font: 500 11px/1 var(--mono); color: var(--faint); margin-top: 7px; }
   .run-item { padding: 12px 13px; border: 1px solid var(--line); border-radius: 9px;
               background: #15171b; cursor: pointer; margin-bottom: 10px; }
   .run-item:hover { border-color: var(--accent); }
@@ -156,37 +166,58 @@
   <div class="bar">
     <div class="logo"><i></i></div>
     <span class="brand">sockstack</span>
-    <span style="font-size:13px;color:var(--faint)">which code path sent this?</span>
+    <span style="font-size:13px;color:var(--faint)" data-i18n="tagline"></span>
     <div class="grow"></div>
+    <span class="pill lang" data-lang-switch>EN · RU</span>
     <span class="pill" id="bindPill">🔒 loopback</span>
   </div>
 
   <div class="launch">
-    <h2>Выберите устройство, чтобы начать</h2>
-    <p class="sub">sockstack сам поднимет frida-server и запустит захват. Управление
-      целью — через зеркало экрана.</p>
+    <h2 data-i18n="launch.h2"></h2>
+    <p class="sub" data-i18n="launch.sub"></p>
 
     <div class="cols">
+     <div>
       <div class="card">
         <div style="display:flex;justify-content:space-between;margin-bottom:14px">
-          <span class="cap">Устройства · Attached</span>
+          <span class="cap" data-i18n="card.devices"></span>
           <span class="mono" style="font-size:12px;color:var(--faint);cursor:pointer"
-                id="rescan">↻ rescan</span>
+                id="rescan" data-i18n="act.rescan"></span>
         </div>
         <div id="deviceList"></div>
         <div style="display:flex;align-items:center;gap:10px;margin-top:16px;
                     padding-top:16px;border-top:1px solid var(--hair)">
           <span class="mono" id="fridaState" style="font-size:12px;color:var(--dim)"></span>
           <span style="color:#3a3d43">·</span>
-          <span class="mono" id="provision"
-                style="font-size:12px;color:var(--dim);cursor:pointer">provision device</span>
+          <span class="mono" id="provision" data-i18n="act.provision"
+                style="font-size:12px;color:var(--dim);cursor:pointer"></span>
         </div>
       </div>
 
+      <div class="card" style="margin-top:24px">
+        <div class="cap" style="margin-bottom:6px" data-i18n="card.install"></div>
+        <p style="margin:0 0 14px;font-size:12px;line-height:1.6;color:var(--dim)"
+           data-i18n="install.why"></p>
+        <div class="drop" id="apkDrop">
+          <input type="file" id="apkFile" accept=".apk,.apks,.xapk"
+                 style="display:none">
+          <div class="drop-main" id="apkDropText" data-i18n="install.drop"></div>
+          <div class="drop-sub" data-i18n="install.dropSub"></div>
+        </div>
+        <label class="field" for="apk" style="margin-top:14px"
+               data-i18n="install.orPath"></label>
+        <div style="display:flex;gap:8px">
+          <input class="chip" id="apk" style="flex:1" placeholder="/path/to/target.apk">
+          <button class="btn" id="install" data-i18n="act.install"></button>
+        </div>
+        <div class="status" id="installStatus"></div>
+      </div>
+     </div>
+
       <div class="card">
-        <div class="cap" style="margin-bottom:14px">Последние запуски · Recent</div>
+        <div class="cap" style="margin-bottom:14px" data-i18n="card.recent"></div>
         <div style="margin-bottom:10px">
-          <label class="field" for="runsRoot">directory to scan</label>
+          <label class="field" for="runsRoot" data-i18n="field.runsRoot"></label>
           <input class="chip" id="runsRoot" style="width:100%" placeholder=".">
         </div>
         <div id="runList"></div>
@@ -194,12 +225,10 @@
     </div>
 
     <div style="display:flex;align-items:center;gap:14px;margin-top:26px;flex-wrap:wrap">
-      <button class="btn primary" id="openWorkspace">Открыть рабочий стол →</button>
+      <button class="btn primary" id="openWorkspace" data-i18n="act.openWorkspace"></button>
       <div class="grow"></div>
       <span style="font-size:12px;color:var(--faint);max-width:300px;text-align:right;
-                   line-height:1.5">
-        Без аутентификации · управляет устройством. Наружу — только через SSH-туннель.
-      </span>
+                   line-height:1.5" data-i18n="launch.security"></span>
     </div>
     <div class="status" id="launchStatus"></div>
   </div>
@@ -212,47 +241,45 @@
     <span class="brand" id="backToLaunch" style="cursor:pointer">sockstack</span>
     <select class="chip" id="device"></select>
     <select class="chip" id="package"></select>
-    <input class="chip" id="output" placeholder="./run" title="output directory">
+    <input class="chip" id="output" placeholder="./run" data-i18n-title="title.output">
     <input class="chip" id="duration" type="number" value="200" style="width:88px"
-           title="seconds">
+           data-i18n-title="title.duration">
     <label class="toggle"><input type="checkbox" id="attach"><i></i>attach</label>
     <label class="toggle"><input type="checkbox" id="antiRoot"><i></i>anti-root</label>
     <div class="grow"></div>
+    <span class="pill lang" data-lang-switch>EN · RU</span>
     <span class="pill" id="statusPill"><span class="dot"
-          style="background:var(--dim)"></span><span id="statusText">idle</span></span>
-    <button class="btn primary" id="start">▶ start run</button>
-    <button class="btn" id="stop" disabled>■ finish early</button>
+          style="background:var(--dim)"></span><span id="statusText"></span></span>
+    <button class="btn primary" id="start" data-i18n="act.start"></button>
+    <button class="btn" id="stop" disabled data-i18n="act.stop"></button>
   </div>
 
   <div class="work">
     <div class="mirror">
       <div style="display:flex;justify-content:space-between;margin-bottom:14px">
-        <span class="cap">Экран · Screen</span>
+        <span class="cap" data-i18n="card.screen"></span>
         <span class="mono" id="toggleTargets"
-              style="font-size:11px;color:var(--accent);cursor:pointer">show targets</span>
+              style="font-size:11px;color:var(--accent);cursor:pointer"></span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <input class="chip" id="apk2" style="flex:1" data-i18n-ph="ph.apk2">
+        <button class="btn" id="pickApk2" data-i18n-title="title.pickFile">📂</button>
+        <button class="btn" id="install2" data-i18n="act.install"></button>
       </div>
       <div class="phone" id="stage">
         <img id="screen" alt="" hidden>
-        <div class="blank" id="noScreen">no screen yet — pick a device</div>
+        <div class="blank" id="noScreen" data-i18n="screen.none"></div>
         <div id="overlay"></div>
       </div>
       <div class="keys">
-        <button class="btn" id="back">◀ back</button>
-        <button class="btn" id="home">● home</button>
+        <button class="btn" id="back" data-i18n="act.back"></button>
+        <button class="btn" id="home" data-i18n="act.home"></button>
         <button class="btn" id="refreshScreen">↻</button>
       </div>
-      <p class="hint">Клик по кадру — тап. Рамки — clickable-узлы иерархии: жмёте
-        кнопку по её resource-id, а не пиксель.</p>
-      <div style="margin-top:18px">
-        <label class="field" for="apk">APK to install</label>
-        <div style="display:flex;gap:8px">
-          <input class="chip" id="apk" style="flex:1" placeholder="/path/to/target.apk">
-          <button class="btn" id="install">install</button>
-        </div>
-        <div style="display:flex;gap:8px;margin-top:8px">
-          <button class="btn" id="launchApp" style="flex:1">launch target</button>
-          <button class="btn" id="reloadPkgs">↻ pkgs</button>
-        </div>
+      <p class="hint" data-i18n="screen.hint"></p>
+      <div style="display:flex;gap:8px;margin-top:18px">
+        <button class="btn" id="launchApp" style="flex:1" data-i18n="act.launchApp"></button>
+        <button class="btn" id="reloadPkgs" data-i18n="act.reloadPkgs"></button>
       </div>
       <div class="status" id="deviceStatus"></div>
     </div>
@@ -260,19 +287,18 @@
     <div class="findings">
       <div style="display:flex;justify-content:space-between;margin-bottom:14px;
                   gap:10px;flex-wrap:wrap">
-        <span class="cap">Атрибуция вызовов · Call-stack attribution</span>
+        <span class="cap" data-i18n="card.attribution"></span>
         <div style="display:flex;gap:6px" id="findingCounts"></div>
       </div>
-      <div id="peers"><div class="empty">No findings loaded. Start a run, or open a
-        directory from the launch screen.</div></div>
+      <div id="peers"><div class="empty" data-i18n="findings.none"></div></div>
     </div>
   </div>
 
   <div class="logstrip">
     <div style="display:flex;justify-content:space-between;margin-bottom:10px">
-      <span class="cap">Журнал · Log</span>
+      <span class="cap" data-i18n="card.log"></span>
       <span class="mono" style="font-size:11px;color:var(--faint);cursor:pointer"
-            id="expandLog">expand</span>
+            id="expandLog"></span>
     </div>
     <div id="log"></div>
   </div>
@@ -280,6 +306,192 @@
 
 <script>
 const $ = id => document.getElementById(id);
+
+// ---- language -------------------------------------------------------------
+// Two languages, one table. Anything the page says lives here; anything the
+// device, adb or sockstack says is passed through untranslated, because a
+// translated tool output is no longer the tool's output.
+const STRINGS = {
+  en: {
+    'tagline': 'which code path sent this?',
+    'launch.h2': 'Pick a device to start',
+    'launch.sub': 'sockstack brings up frida-server and starts the capture itself. ' +
+                  'The target is driven through the screen mirror.',
+    'launch.security': 'No authentication · drives the device. Reach it from ' +
+                       'elsewhere over an SSH tunnel only.',
+    'card.devices': '1 · Devices · attached',
+    'card.install': '2 · Install an APK',
+    'card.recent': 'Recent runs',
+    'card.screen': 'Screen',
+    'card.attribution': 'Call-stack attribution',
+    'card.log': 'Log',
+    'install.why': 'Optional: if the app is already on the device, move on. The ' +
+                   'reason to install from here is the package name — it is read ' +
+                   'from the difference in <span class="mono">pm list packages</span> ' +
+                   'before and after, and the filename will not tell you it.',
+    'install.drop': 'Drop an APK here, or click to choose a file',
+    'install.dropSub': 'the file is sent to the host running adb',
+    'install.orPath': '…or a path on that host',
+    'field.runsRoot': 'directory to scan',
+    'act.rescan': '↻ rescan',
+    'act.provision': 'provision device',
+    'act.install': 'install',
+    'act.openWorkspace': 'Open the workspace →',
+    'act.start': '▶ start run',
+    'act.stop': '■ finish early',
+    'act.back': '◀ back',
+    'act.home': '● home',
+    'act.launchApp': 'launch target',
+    'act.reloadPkgs': '↻ pkgs',
+    'act.showTargets': 'show targets',
+    'act.hideTargets': 'hide targets',
+    'act.expand': 'expand',
+    'act.collapse': 'collapse',
+    'ph.apk2': 'APK: path, or pick a file →',
+    'title.output': 'output directory',
+    'title.duration': 'seconds',
+    'title.pickFile': 'choose a file',
+    'screen.none': 'no screen yet — pick a device',
+    'screen.failed': 'screencap failed',
+    'screen.hint': 'A click on the frame is a tap. The boxes are clickable nodes ' +
+                   'of the hierarchy: you press a button by its resource-id, not a pixel.',
+    'findings.none': 'No findings loaded. Start a run, or open a directory from ' +
+                     'the launch screen.',
+    'findings.noPeers': 'No peers recorded.',
+    'findings.nothing': 'nothing here yet',
+    'runs.none': 'No run directories here.',
+    'runs.bridgeFailed': 'java bridge failed',
+    'dev.none': 'Nothing attached. Check the cable, or ' +
+                '<span class="mono">adb start-server</span>.',
+    'dev.unauthorised': 'accept the authorisation prompt on the device',
+    'dev.frida.on': 'frida-server running',
+    'dev.frida.off': 'frida-server not running — sockstack starts it on demand',
+    'dev.pickFirst': 'pick a device that reports READY first',
+    'st.idle': 'idle',
+    'st.running': 'running',
+    'st.installing': 'installing…',
+    'st.installed': 'installed — the package is',
+    'st.installFailed': 'install failed',
+    'st.needDevice': 'pick a device first',
+    'st.needApk': 'give a path, or choose a file',
+    'st.uploading': 'sending',
+    'st.uploadFailed': 'upload failed',
+    'st.packages': 'third-party package(s)',
+    'st.elements': 'clickable element(s)',
+    'st.tapped': 'tapped',
+    'b.peers': 'peers',
+    'b.sites': 'call sites',
+    'b.records': 'records',
+    'b.noBridge': 'java bridge unavailable',
+    'b.ops': 'ops',
+    'b.site': 'call site(s)',
+    'cross.ok': 'Kernel cross-check on uid $1: ran, $2 poll(s).',
+    'cross.bad': 'Kernel cross-check: $1 — its silence is not evidence.',
+  },
+  ru: {
+    'tagline': 'какой код это отправил?',
+    'launch.h2': 'Выберите устройство, чтобы начать',
+    'launch.sub': 'sockstack сам поднимет frida-server и запустит захват. ' +
+                  'Управление целью — через зеркало экрана.',
+    'launch.security': 'Без аутентификации · управляет устройством. Наружу — ' +
+                       'только через SSH-туннель.',
+    'card.devices': '1 · Устройства · подключено',
+    'card.install': '2 · Установить APK',
+    'card.recent': 'Последние запуски',
+    'card.screen': 'Экран',
+    'card.attribution': 'Атрибуция вызовов',
+    'card.log': 'Журнал',
+    'install.why': 'Шаг необязательный: если приложение уже на устройстве, идите ' +
+                   'дальше. Ставить отсюда стоит ради имени пакета — оно берётся ' +
+                   'из разницы <span class="mono">pm list packages</span> до и ' +
+                   'после, а из имени файла его не узнать.',
+    'install.drop': 'Перетащите APK сюда или нажмите, чтобы выбрать файл',
+    'install.dropSub': 'файл уедет на хост, где запущен adb',
+    'install.orPath': '…или путь на этом хосте',
+    'field.runsRoot': 'где искать каталоги запусков',
+    'act.rescan': '↻ обновить',
+    'act.provision': 'подготовить устройство',
+    'act.install': 'установить',
+    'act.openWorkspace': 'Открыть рабочий стол →',
+    'act.start': '▶ запустить',
+    'act.stop': '■ завершить',
+    'act.back': '◀ назад',
+    'act.home': '● домой',
+    'act.launchApp': 'запустить цель',
+    'act.reloadPkgs': '↻ пакеты',
+    'act.showTargets': 'показать элементы',
+    'act.hideTargets': 'скрыть элементы',
+    'act.expand': 'развернуть',
+    'act.collapse': 'свернуть',
+    'ph.apk2': 'APK: путь или выберите файл →',
+    'title.output': 'каталог результатов',
+    'title.duration': 'секунды',
+    'title.pickFile': 'выбрать файл',
+    'screen.none': 'экрана пока нет — выберите устройство',
+    'screen.failed': 'снимок экрана не получился',
+    'screen.hint': 'Клик по кадру — тап. Рамки — clickable-узлы иерархии: жмёте ' +
+                   'кнопку по её resource-id, а не пиксель.',
+    'findings.none': 'Ничего не загружено. Запустите прогон или откройте каталог ' +
+                     'с экрана запуска.',
+    'findings.noPeers': 'Ни одного адреса не записано.',
+    'findings.nothing': 'здесь пока пусто',
+    'runs.none': 'Каталогов с запусками здесь нет.',
+    'runs.bridgeFailed': 'java-мост не поднялся',
+    'dev.none': 'Ничего не подключено. Проверьте кабель или ' +
+                '<span class="mono">adb start-server</span>.',
+    'dev.unauthorised': 'подтвердите авторизацию на самом устройстве',
+    'dev.frida.on': 'frida-server работает',
+    'dev.frida.off': 'frida-server не запущен — sockstack поднимет его сам',
+    'dev.pickFirst': 'сначала выберите устройство в состоянии READY',
+    'st.idle': 'простой',
+    'st.running': 'идёт',
+    'st.installing': 'ставлю…',
+    'st.installed': 'установлено — пакет',
+    'st.installFailed': 'установить не удалось',
+    'st.needDevice': 'сначала выберите устройство',
+    'st.needApk': 'укажите путь или выберите файл',
+    'st.uploading': 'отправляю',
+    'st.uploadFailed': 'загрузка не удалась',
+    'st.packages': 'сторонних пакетов',
+    'st.elements': 'кликабельных элементов',
+    'st.tapped': 'тап по',
+    'b.peers': 'адресов',
+    'b.sites': 'мест вызова',
+    'b.records': 'записей',
+    'b.noBridge': 'java-мост недоступен',
+    'b.ops': 'операций',
+    'b.site': 'мест вызова',
+    'cross.ok': 'Сверка с ядром по uid $1: выполнена, опросов — $2.',
+    'cross.bad': 'Сверка с ядром: $1 — её молчание доказательством не является.',
+  },
+};
+const browserRussian = (navigator.language || '').toLowerCase().startsWith('ru');
+let LANG = localStorage.getItem('sockstack.lang') || (browserRussian ? 'ru' : 'en');
+if (!STRINGS[LANG]) LANG = 'en';
+const t = (key, ...subs) => subs.reduce(
+  (text, value, i) => text.split('$' + (i + 1)).join(value),
+  (STRINGS[LANG] || STRINGS.en)[key] || key);
+
+function applyLang() {
+  document.documentElement.lang = LANG;
+  localStorage.setItem('sockstack.lang', LANG);
+  document.querySelectorAll('[data-i18n]').forEach(
+    node => node.innerHTML = t(node.dataset.i18n));
+  document.querySelectorAll('[data-i18n-ph]').forEach(
+    node => node.placeholder = t(node.dataset.i18nPh));
+  document.querySelectorAll('[data-i18n-title]').forEach(
+    node => node.title = t(node.dataset.i18nTitle));
+  document.querySelectorAll('[data-lang-switch]').forEach(node => node.innerHTML =
+    LANG === 'en' ? '<b>EN</b> · RU' : 'EN · <b>RU</b>');
+  // Anything the page has already drawn from data has to be redrawn, or half
+  // the screen would stay in the language you just left.
+  $('toggleTargets').textContent = t(targetsOn ? 'act.hideTargets' : 'act.showTargets');
+  $('expandLog').textContent = t($('log').classList.contains('tall')
+                                 ? 'act.collapse' : 'act.expand');
+  if (!RUN_RUNNING) $('statusText').textContent = t('st.idle');
+  loadDevices(); loadRuns(); loadFindings();
+}
+
 const post = (p, b) => fetch(p, {method: 'POST', headers: {'Content-Type': 'application/json'},
                                 body: JSON.stringify(b || {})}).then(r => r.json());
 const get = p => fetch(p).then(r => r.json());
@@ -301,8 +513,7 @@ async function loadDevices() {
   const previous = select.value;
   select.innerHTML = '';
   if (!devices.length) {
-    list.innerHTML = '<div class="empty">Nothing attached. Check the cable, or ' +
-                     '<span class="mono">adb start-server</span>.</div>';
+    list.innerHTML = `<div class="empty">${t('dev.none')}</div>`;
   }
   devices.forEach(d => {
     const ready = d.state === 'device';
@@ -313,7 +524,7 @@ async function loadDevices() {
        <div style="flex:1;min-width:0">
          <div class="name">${esc(d.serial)}${d.model ? ' · ' + esc(d.model) : ''}</div>
          <div class="meta" data-meta="${esc(d.serial)}">${ready ? '…' :
-           'accept the authorisation prompt on the device'}</div>
+           t('dev.unauthorised')}</div>
        </div>
        <span class="state" style="color:${ready ? 'var(--accent)' : 'var(--warn)'}">
          ${ready ? '<span class="dot" style="background:var(--accent)"></span>READY'
@@ -349,9 +560,8 @@ async function loadDeviceInfo() {
       .filter(Boolean).join(' · ');
   }
   $('fridaState').innerHTML = info.frida
-    ? '<span class="dot" style="background:var(--accent)"></span> frida-server running'
-    : '<span class="dot" style="background:var(--warn)"></span> frida-server not running ' +
-      '— sockstack starts it on demand';
+    ? `<span class="dot" style="background:var(--accent)"></span> ${t('dev.frida.on')}`
+    : `<span class="dot" style="background:var(--warn)"></span> ${t('dev.frida.off')}`;
 }
 
 // ---- packages -------------------------------------------------------------
@@ -366,7 +576,7 @@ async function loadPackages() {
     option.textContent = p.package + (p.installed ? '   ' + p.installed : '');
     select.appendChild(option);
   });
-  say('deviceStatus', data.ok ? `${(data.packages || []).length} third-party package(s)`
+  say('deviceStatus', data.ok ? `${(data.packages || []).length} ${t('st.packages')}`
                               : (data.error || ''), !data.ok);
 }
 
@@ -378,7 +588,7 @@ function refreshScreen() {
   image.onload = () => { image.hidden = false; $('noScreen').classList.add('hidden');
                          if (targetsOn) loadTargets(); };
   image.onerror = () => { image.hidden = true; $('noScreen').classList.remove('hidden');
-                          $('noScreen').textContent = 'screencap failed'; };
+                          $('noScreen').textContent = t('screen.failed'); };
   image.src = '/api/screen?device=' + encodeURIComponent(dev()) + '&t=' + Date.now();
 }
 async function loadTargets() {
@@ -401,11 +611,11 @@ async function loadTargets() {
     box.onclick = e => { e.stopPropagation(); tap(el.center[0], el.center[1], name); };
     overlay.appendChild(box);
   });
-  say('deviceStatus', `${(data.elements || []).length} clickable element(s)`);
+  say('deviceStatus', `${(data.elements || []).length} ${t('st.elements')}`);
 }
 async function tap(x, y, what) {
   await post('/api/tap', {device: dev(), x, y});
-  say('deviceStatus', what ? 'tapped ' + what : `tapped ${x},${y}`);
+  say('deviceStatus', `${t('st.tapped')} ${what || x + ',' + y}`);
   setTimeout(refreshScreen, 700);
 }
 $('stage').addEventListener('click', e => {
@@ -425,23 +635,23 @@ async function loadFindings() {
   const box = $('peers');
   const counts = $('findingCounts');
   if (!data.ok) {
-    box.innerHTML = `<div class="empty">${esc(data.error || 'nothing here yet')}</div>`;
+    box.innerHTML = `<div class="empty">${esc(data.error || t('findings.nothing'))}</div>`;
     counts.innerHTML = ''; return;
   }
   const sites = (data.cards || []).reduce((n, c) => n + c.sites.length, 0);
   counts.innerHTML =
-    `<span class="badge">${data.cards.length} peers</span>` +
-    `<span class="badge">${sites} call sites</span>` +
-    `<span class="badge">${data.records} records</span>` +
+    `<span class="badge">${data.cards.length} ${t('b.peers')}</span>` +
+    `<span class="badge">${sites} ${t('b.sites')}</span>` +
+    `<span class="badge">${data.records} ${t('b.records')}</span>` +
     (data.bridge === false
-      ? '<span class="badge unknown">java bridge unavailable</span>' : '');
+      ? `<span class="badge unknown">${t('b.noBridge')}</span>` : '');
   const cross = data.cross_check || {};
   const crossLine = cross.status === 'ok'
-    ? `<div class="empty" style="margin-bottom:12px">Kernel cross-check on uid ` +
-      `${cross.uid}: ran, ${cross.polls_succeeded} poll(s).</div>`
+    ? `<div class="empty" style="margin-bottom:12px">` +
+      `${t('cross.ok', cross.uid, cross.polls_succeeded)}</div>`
     : cross.status
       ? `<div class="empty" style="margin-bottom:12px;color:var(--warn)">` +
-        `Kernel cross-check: ${esc(cross.status)} — its silence is not evidence.</div>`
+        `${t('cross.bad', esc(cross.status))}</div>`
       : '';
   box.innerHTML = crossLine + ((data.cards || []).map(card => {
     const frames = card.sites.map(s => {
@@ -454,15 +664,15 @@ async function loadFindings() {
       <div class="head">
         <span class="addr">${esc(card.peer)}</span>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${card.ops ? `<span class="badge">${card.ops} ops</span>` : ''}
-          ${card.sites.length ? `<span class="badge good">${card.sites.length} call site(s)</span>` : ''}
+          ${card.ops ? `<span class="badge">${card.ops} ${t('b.ops')}</span>` : ''}
+          ${card.sites.length ? `<span class="badge good">${card.sites.length} ${t('b.site')}</span>` : ''}
           <span class="badge ${card.tone}">${esc(card.kind)}</span>
         </div>
       </div>
       ${frames ? `<div class="frames">${frames}</div>` : ''}
       <div class="note">${esc(card.note || card.label)}</div>
     </div>`;
-  }).join('') || '<div class="empty">No peers recorded.</div>');
+  }).join('') || `<div class="empty">${t('findings.noPeers')}</div>`);
 }
 
 // ---- recent runs ----------------------------------------------------------
@@ -471,7 +681,7 @@ async function loadRuns() {
   const data = await get('/api/runs?root=' + encodeURIComponent(root));
   const list = $('runList');
   if (!(data.runs || []).length) {
-    list.innerHTML = '<div class="empty">No run directories here.</div>'; return;
+    list.innerHTML = `<div class="empty">${t('runs.none')}</div>`; return;
   }
   list.innerHTML = data.runs.map(r => `
     <div class="run-item" data-dir="${esc(r.dir)}">
@@ -479,8 +689,8 @@ async function loadRuns() {
       <div class="b">
         <span>${esc(r.started)} · ${esc(r.mode)}</span>
         <span style="color:${r.bridge === false ? 'var(--warn)' : 'var(--dim)'}">
-          ${r.bridge === false ? 'java bridge failed'
-                               : `${r.sites} call site(s) · ${r.records} records`}</span>
+          ${r.bridge === false ? t('runs.bridgeFailed')
+                               : `${r.sites} ${t('b.site')} · ${r.records} ${t('b.records')}`}</span>
       </div>
     </div>`).join('');
   [...list.children].forEach(node => node.onclick = () => {
@@ -491,6 +701,7 @@ async function loadRuns() {
 
 // ---- run control ----------------------------------------------------------
 let since = 0;
+let RUN_RUNNING = false;
 function paint(line) {
   const cls = line.startsWith('[+]') ? 'ok' : line.startsWith('[!]') ? 'badc'
             : line.startsWith('[i]') || line.startsWith('[·]') ? 'warnc' : '';
@@ -505,13 +716,15 @@ async function pollLog() {
     if (atBottom) log.scrollTop = log.scrollHeight;
     since = data.next;
   }
+  RUN_RUNNING = !!data.running;
   $('stop').disabled = !data.running;
   $('start').disabled = !!data.running;
   const pill = $('statusPill');
   pill.classList.toggle('live', !!data.running);
   pill.querySelector('.dot').style.background =
     data.running ? 'var(--accent)' : 'var(--dim)';
-  $('statusText').textContent = data.running ? `running · ${data.elapsed}s` : 'idle';
+  $('statusText').textContent = data.running
+    ? `${t('st.running')} · ${data.elapsed}s` : t('st.idle');
   if (!data.running && data.output && data.output === $('output').value) loadFindings();
   setTimeout(pollLog, data.running ? 1000 : 3000);
 }
@@ -525,15 +738,63 @@ $('start').onclick = async () => {
   if (!data.ok) say('deviceStatus', data.message, true);
 };
 $('stop').onclick = () => post('/api/stop');
-$('install').onclick = async () => {
-  say('deviceStatus', 'installing…');
-  const data = await post('/api/install', {device: dev(), path: $('apk').value});
+
+// ---- install --------------------------------------------------------------
+// Two ways in, because the APK is on one of two machines: already on the host
+// running adb (a path), or on the machine holding the browser (upload first).
+async function upload(file, statusId) {
+  say(statusId, `${t('st.uploading')} ${file.name} ` +
+                `(${(file.size / 1048576).toFixed(1)} MB)…`);
+  const response = await fetch('/api/upload', {
+    method: 'POST', headers: {'X-Filename': file.name}, body: file});
+  const data = await response.json();
+  if (!data.ok) { say(statusId, data.error || t('st.uploadFailed'), true); return ''; }
+  return data.path;
+}
+async function installApk(source, statusId) {
+  if (!dev()) { say(statusId, t('st.needDevice'), true); return; }
+  const path = typeof source === 'string' ? source.trim()
+                                          : await upload(source, statusId);
+  if (!path) {
+    if (typeof source === 'string') say(statusId, t('st.needApk'), true);
+    return;
+  }
+  say(statusId, t('st.installing'));
+  const data = await post('/api/install', {device: dev(), path: path});
   await loadPackages();
   if (data.installed) {
+    // The name the tracer needs, which the filename never tells you.
     $('package').value = data.installed;
-    say('deviceStatus', 'installed — package is ' + data.installed);
-  } else say('deviceStatus', data.output || '', !data.ok);
+    say(statusId, `${t('st.installed')} ${data.installed}`);
+  } else {
+    // adb's own words on failure — a translated install error is a worse error.
+    say(statusId, data.output || t('st.installFailed'), !data.ok);
+  }
+}
+$('install').onclick = () => installApk($('apk').value, 'installStatus');
+$('install2').onclick = () => installApk($('apk2').value, 'deviceStatus');
+$('apkDrop').onclick = () => $('apkFile').click();
+$('pickApk2').onclick = () => { pickerStatus = 'deviceStatus'; $('apkFile').click(); };
+let pickerStatus = 'installStatus';
+$('apkFile').onchange = event => {
+  const file = event.target.files[0];
+  if (file) {
+    $('apkDropText').textContent = file.name;
+    installApk(file, pickerStatus);
+  }
+  pickerStatus = 'installStatus';
+  event.target.value = '';                 // so the same file can be picked twice
 };
+['dragenter', 'dragover'].forEach(name => $('apkDrop').addEventListener(name, event => {
+  event.preventDefault(); $('apkDrop').classList.add('over');
+}));
+['dragleave', 'drop'].forEach(name => $('apkDrop').addEventListener(name, event => {
+  event.preventDefault(); $('apkDrop').classList.remove('over');
+}));
+$('apkDrop').addEventListener('drop', event => {
+  const file = event.dataTransfer.files[0];
+  if (file) { $('apkDropText').textContent = file.name; installApk(file, 'installStatus'); }
+});
 $('launchApp').onclick = async () => {
   await post('/api/launch', {device: dev(), package: $('package').value});
   setTimeout(refreshScreen, 1200);
@@ -553,7 +814,7 @@ function showWorkspace() {
 function onDeviceChange() { markSelected(); loadPackages(); refreshScreen(); loadDeviceInfo(); }
 
 $('openWorkspace').onclick = () => dev() ? showWorkspace()
-  : say('launchStatus', 'pick a device that reports READY first', true);
+  : say('launchStatus', t('dev.pickFirst'), true);
 $('backToLaunch').onclick = () => {
   $('workView').classList.add('hidden');
   $('launchView').classList.remove('hidden');
@@ -566,21 +827,24 @@ $('refreshScreen').onclick = refreshScreen;
 $('runsRoot').onchange = loadRuns;
 $('toggleTargets').onclick = () => {
   targetsOn = !targetsOn;
-  $('toggleTargets').textContent = targetsOn ? 'hide targets' : 'show targets';
+  $('toggleTargets').textContent = t(targetsOn ? 'act.hideTargets' : 'act.showTargets');
   if (targetsOn) loadTargets(); else $('overlay').innerHTML = '';
 };
 $('expandLog').onclick = () => {
   const tall = $('log').classList.toggle('tall');
-  $('expandLog').textContent = tall ? 'collapse' : 'expand';
+  $('expandLog').textContent = t(tall ? 'act.collapse' : 'act.expand');
 };
+document.querySelectorAll('[data-lang-switch]').forEach(node => node.onclick = () => {
+  LANG = LANG === 'en' ? 'ru' : 'en';
+  applyLang();
+});
 $('back').onclick = () => post('/api/key', {device: dev(), key: 'KEYCODE_BACK'})
   .then(() => setTimeout(refreshScreen, 600));
 $('home').onclick = () => post('/api/key', {device: dev(), key: 'KEYCODE_HOME'})
   .then(() => setTimeout(refreshScreen, 600));
 $('bindPill').textContent = '🔒 ' + location.host;
 
-loadDevices();
-loadRuns();
+applyLang();          // draws every label, and the first loadDevices/loadRuns with it
 pollLog();
 </script>
 </body>

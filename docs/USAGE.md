@@ -52,6 +52,15 @@ steps 3 to 5: pick a device from a list that says what each one is, install an
 APK and be told the package name it registered under, start the run, and drive
 the target by clicking its buttons instead of computing tap coordinates.
 
+The APK goes in on the launch screen, second card: drop the file on it, or type
+a path that already exists on the host running `adb`. Dropping it uploads it to
+that host first, which is the case that matters when the browser is on your
+laptop and the phone is on the stand. Either way the install answers step 4's
+question for you — the newly registered package name is filled into the selector.
+
+`EN · RU` in the top bar switches the interface language and is remembered.
+Output from adb, from sockstack and from the findings is left in its own words.
+
 What it does **not** replace is step 6. The findings panel renders the same
 conclusions — it calls the same code — but knowing what `not-examined` licenses
 you to say, and what it does not, is the part of this tool that matters. Read

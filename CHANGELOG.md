@@ -23,6 +23,21 @@ For the same reason recent runs are described by what they recorded — call
 sites, records, whether the bridge worked — and never as "clean". Nothing found
 and nothing working look identical from the outside.
 
+Getting the APK onto the device is now a step of the launch screen instead of a
+field below a phone-sized frame nobody scrolled past. It takes a drop or a file
+picker as well as a path, because the browser is usually not on the machine
+holding the device — a laptop tunnelled into the stand — and a path field only
+ever worked for files that were already there. Uploads land in a temp directory
+on the adb host with the filename reduced to a basename that cannot climb out of
+it, and a transfer that ends early is deleted and reported as a short transfer,
+not left to install as a parse error that reads like a broken sample.
+
+The interface speaks English and Russian, switched from the top bar and
+remembered. Only the interface: adb output, sockstack's log and the findings text
+stay in the words the tool produced them in. Both string tables are checked
+against each other and against every key the page asks for, because a missing key
+does not fail — it renders its own name where a sentence should be.
+
 Fonts are the system stack rather than a webfont CDN: a forensic console should
 not phone home when a page opens, and on an isolated host it would not render.
 
