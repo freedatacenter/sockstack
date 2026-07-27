@@ -35,6 +35,8 @@
           display: flex; align-items: center; justify-content: center; flex: none; }
   .logo i { width: 7px; height: 7px; background: var(--bg); display: block; }
   .brand { font: 600 14px/1 var(--mono); }
+  .brand.back { cursor: pointer; }
+  .brand.back:hover { color: var(--accent); }
   .sep { width: 1px; height: 20px; background: var(--line); }
   .grow { flex: 1; }
   .chip { display: flex; align-items: center; gap: 8px; background: var(--raised);
@@ -301,7 +303,8 @@
 <div id="workView" class="hidden">
   <div class="bar">
     <div class="logo"><i></i></div>
-    <span class="brand" id="backToLaunch" style="cursor:pointer">sockstack</span>
+    <span class="brand back" id="backToLaunch"
+          data-i18n-title="title.back">← sockstack</span>
     <select class="chip" id="device"></select>
     <select class="chip" id="package"></select>
     <input class="chip" id="output" placeholder="./run" data-i18n-title="title.output">
@@ -467,6 +470,7 @@ const STRINGS = {
     'title.output': 'output directory',
     'title.duration': 'seconds',
     'title.pickFile': 'choose a file',
+    'title.back': 'back to the devices and the recent runs',
     'screen.none': 'no screen yet — pick a device',
     'screen.failed': 'screencap failed',
     'screen.hint': 'A click on the frame is a tap. The boxes are clickable nodes ' +
@@ -594,6 +598,7 @@ const STRINGS = {
     'title.output': 'каталог результатов',
     'title.duration': 'секунды',
     'title.pickFile': 'выбрать файл',
+    'title.back': 'назад к устройствам и прошлым прогонам',
     'screen.none': 'экрана пока нет — выберите устройство',
     'screen.failed': 'снимок экрана не получился',
     'screen.hint': 'Клик по кадру — тап. Рамки — clickable-узлы иерархии: жмёте ' +
