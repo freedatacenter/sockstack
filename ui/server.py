@@ -26,6 +26,7 @@ the right way to use it from another machine is an SSH tunnel:
 `--bind` exists for the cases where that is impractical, and says what it costs.
 """
 import argparse
+import errno
 import json
 import os
 import re
@@ -295,6 +296,141 @@ def attribution_cards(out_dir):
             'cross_check': {k: v for k, v in uid_blob.items() if k != 'peers'}}
 
 
+# A body can be a megabyte of protobuf. The page needs enough to recognise what
+# was sent, not the whole payload — the file on disk is the artifact, and the
+# panel says when it is showing less than there is.
+BODY_CHARS = 4000
+MAX_BODIES = 40
+
+
+PRINTABLE = set(range(0x20, 0x7f)) | {0x09, 0x0a, 0x0d}
+STRING_RUN = re.compile(rb'[\x20-\x7e]{4,}')
+HEX_BYTES = 1024
+
+
+def render_body(raw):
+    """One body, shown the way its contents deserve.
+
+    Decoding protobuf as UTF-8 produces a screen of replacement characters with
+    the useful parts — versions, package names, identifiers — buried in them. So
+    a body that is mostly unprintable is offered as its printable runs, the way
+    `strings` would, with the bytes themselves a click away. Text is still text.
+    """
+    printable = sum(1 for byte in raw if byte in PRINTABLE)
+    binary = bool(raw) and printable / len(raw) < 0.85
+    body = {'bytes': len(raw), 'binary': binary, 'hex': '', 'text': ''}
+    if not binary:
+        body['text'] = raw.decode('utf-8', 'replace')[:BODY_CHARS]
+        body['clipped'] = len(raw) > BODY_CHARS
+        return body
+    runs = [run.decode('ascii') for run in STRING_RUN.findall(raw)]
+    body['text'] = '\n'.join(runs)[:BODY_CHARS]
+    body['strings'] = len(runs)
+    window = raw[:HEX_BYTES]
+    lines = []
+    for offset in range(0, len(window), 16):
+        chunk = window[offset:offset + 16]
+        gutter = ''.join(chr(b) if b in PRINTABLE and b >= 0x20 else '.' for b in chunk)
+        lines.append(f'{offset:08x}  {chunk.hex(" "):<47}  {gutter}')
+    body['hex'] = '\n'.join(lines)
+    body['clipped'] = len(raw) > HEX_BYTES
+    return body
+
+
+def peer_address(peer):
+    """`1.2.3.4:443` / `[::1]:443` -> the address alone."""
+    text = (peer or '').strip()
+    if text.startswith('['):
+        return text[1:].split(']', 1)[0]
+    return text.rsplit(':', 1)[0] if ':' in text else text
+
+
+def stream_state(pcap, enc, ip, saw_http):
+    """Was this peer's traffic readable, or merely present?
+
+    Three outcomes that must not be allowed to look alike: read it, saw it and
+    could not read it, never saw it. An app that speaks its own protocol over a
+    raw socket produces TLS records friTap has no keys for — and rendering that
+    as an empty request list would say "it sent nothing", which is the opposite
+    of what happened.
+    """
+    if saw_http:
+        return 'decrypted'
+    if not ip:
+        return ''
+    family = 'ipv6.addr' if ':' in ip else 'ip.addr'
+    for path in (enc, pcap):
+        if not path or not os.path.exists(path):
+            continue
+        rows, err = sockstack.tshark_fields(path, f'{family} == {ip} && tls.app_data',
+                                            'frame.number')
+        if err:
+            return ''
+        if rows:
+            return 'encrypted'
+    return 'absent'
+
+
+def traffic_view(out_dir, peer=''):
+    """Requests and decrypted bodies from a finished run, optionally for one peer.
+
+    Both come from sockstack's own extraction, so the panel and the written
+    report cannot disagree about what was sent.
+
+    Filtering is by **destination**, and the caller has to say so. The tracer
+    records no payload — a record carries the fd, the thread, the address and the
+    stack — so a body can be tied to the address a call site contacted and no
+    further. Where two call sites share a destination, which of them sent a given
+    body is not something this data can answer, and the page must not imply it.
+    """
+    if not out_dir or not os.path.isdir(out_dir):
+        return {'ok': False, 'error': 'no such directory', 'requests': [],
+                'bodies': []}
+    pcap = os.path.join(out_dir, 'traffic.pcap')
+    enc = os.path.join(out_dir, 'decrypted.pcapng')
+    if not os.path.exists(pcap) and not os.path.exists(enc):
+        return {'ok': False, 'error': 'no capture in this directory — a run with '
+                                      '--host, or one that never got a pcap',
+                'requests': [], 'bodies': []}
+    if not shutil.which('tshark'):
+        return {'ok': False, 'error': 'tshark is not installed, so nothing can be '
+                                      'read out of the capture',
+                'requests': [], 'bodies': []}
+
+    records = sockstack._load_records(out_dir)
+    counts = sockstack._load_json(
+        os.path.join(out_dir, 'socket_trace_counts.json'), {}).get('counts')
+    target_ips = sockstack.tracer_ips(records, counts)
+    uid_blob = sockstack._load_json(os.path.join(out_dir, 'uid_sockets.json'), {})
+    target_ips |= {e['ip'] for e in uid_blob.get('peers', []) if e.get('ip')}
+
+    wanted = peer_address(peer)
+    http1, http2 = sockstack.http_exchanges(pcap, enc, target_ips)
+    requests = []
+    for proto, table in (('HTTP/1', http1), ('HTTP/2', http2)):
+        for label, entry in sorted(table.items()):
+            if wanted and wanted not in entry['ips']:
+                continue
+            requests.append({'label': label, 'target': entry['target'],
+                             'proto': proto, 'ips': entry['ips']})
+
+    placed, fragmented = sockstack.collect_bodies(pcap, enc)
+    if wanted:
+        placed = [(ip, text) for ip, text in placed if ip == wanted]
+    truncated = len(placed) > MAX_BODIES
+    bodies = []
+    for address, raw in placed[:MAX_BODIES]:
+        body = render_body(raw)
+        truncated = truncated or body.pop('clipped', False)
+        bodies.append(dict(body, ip=address))
+    return {'ok': True, 'error': '', 'peer': peer, 'requests': requests,
+            'bodies': bodies, 'truncated': truncated, 'fragmented': fragmented,
+            'state': stream_state(pcap, enc, wanted, bool(requests or bodies)),
+            # Not decoration: an unmarked request is one nobody tied to the
+            # target, and the capture is device-wide.
+            'attributed': sum(1 for r in requests if r['target'])}
+
+
 def recent_runs(root):
     """Runs found under `root`, newest first, described by what they recorded.
 
@@ -455,6 +591,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, RUN.tail(int(query.get('since') or 0)))
             if url.path == '/api/deviceinfo':
                 return self._send(200, self._device_info(serial))
+            if url.path == '/api/traffic':
+                return self._send(200, traffic_view(query.get('dir') or '',
+                                                    query.get('peer') or ''))
             if url.path == '/api/attribution':
                 return self._send(200, attribution_cards(query.get('dir') or ''))
             if url.path == '/api/runs':
@@ -703,7 +842,16 @@ def main():
               f'reach it controls the device. Prefer an SSH tunnel:\n'
               f'    ssh -L {args.port}:127.0.0.1:{args.port} <user>@<this host>')
 
-    server = ThreadingHTTPServer((args.bind, args.port), Handler)
+    try:
+        server = ThreadingHTTPServer((args.bind, args.port), Handler)
+    except OSError as exc:
+        # Starting it twice is the ordinary mistake — over a tunnel, one already
+        # runs on the far end. A traceback for that reads like a broken tool.
+        if exc.errno == errno.EADDRINUSE:
+            sys.exit(f'[!] port {args.port} is already in use. A panel is probably '
+                     f'running here already — open http://127.0.0.1:{args.port}, or '
+                     f'start this one with --port on a free number.')
+        sys.exit(f'[!] could not listen on {args.bind}:{args.port}: {exc.strerror}')
     print(f'[+] sockstack ui on http://{args.bind}:{args.port}')
     try:
         server.serve_forever()

@@ -257,6 +257,16 @@ from another machine with a tunnel rather than `--bind`:
 ssh -L 8722:127.0.0.1:8722 user@analysis-host
 ```
 
+## Is it ready right now?
+
+```bash
+./scripts/preflight.sh --device emulator-5554 --package com.example.app
+```
+
+Checks the whole chain and finishes with a twenty-second real run, because
+"installed" and "will work" are different questions. Failures say what to do;
+the exit status is 0 only when every check passed.
+
 ## Emulator vs physical phone
 
 | | Emulator (userdebug) | Physical phone (Magisk) |

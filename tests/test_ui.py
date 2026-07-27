@@ -375,3 +375,173 @@ class AdbServerLabel(unittest.TestCase):
         os.environ['ANDROID_ADB_SERVER_PORT'] = '5038'
         os.environ['ADB_SERVER_SOCKET'] = 'tcp:10.0.0.9:5037'
         self.assertEqual(server.adb_server_label(), 'tcp:10.0.0.9:5037')
+
+
+# --------------------------------------------------------------------------- traffic view
+
+class PeerAddress(unittest.TestCase):
+    def test_an_ordinary_peer(self):
+        self.assertEqual(server.peer_address('1.2.3.4:443'), '1.2.3.4')
+
+    def test_ipv6_keeps_its_colons(self):
+        self.assertEqual(server.peer_address('[2606:4700::1111]:443'),
+                         '2606:4700::1111')
+
+    def test_an_address_with_no_port(self):
+        self.assertEqual(server.peer_address('1.2.3.4'), '1.2.3.4')
+
+    def test_nothing(self):
+        self.assertEqual(server.peer_address(''), '')
+        self.assertEqual(server.peer_address(None), '')
+
+
+class StreamState(unittest.TestCase):
+    """Read it, saw it and could not read it, never saw it. The middle one is
+    the whole point: an app speaking its own protocol over a raw socket leaves
+    TLS records nobody has keys for, and drawing that as an empty request list
+    says "it sent nothing" — the opposite of what happened."""
+
+    def setUp(self):
+        self.calls = []
+        self.saved = server.sockstack.tshark_fields
+
+    def tearDown(self):
+        server.sockstack.tshark_fields = self.saved
+
+    def fake(self, rows, err=None):
+        def fields(path, flt, *names):
+            self.calls.append(flt)
+            return rows, err
+        server.sockstack.tshark_fields = fields
+
+    def test_http_that_was_read_is_decrypted(self):
+        self.fake([])
+        self.assertEqual(server.stream_state('a.pcap', 'b.pcapng', '1.2.3.4', True),
+                         'decrypted')
+        self.assertEqual(self.calls, [])      # no need to ask
+
+    def test_tls_with_no_readable_inside_is_not_silence(self):
+        self.fake(['1', '2'])
+        with tempfile.NamedTemporaryFile(suffix='.pcapng') as fh:
+            self.assertEqual(server.stream_state('', fh.name, '1.2.3.4', False),
+                             'encrypted')
+
+    def test_a_peer_absent_from_the_capture_says_so(self):
+        self.fake([])
+        with tempfile.NamedTemporaryFile(suffix='.pcapng') as fh:
+            self.assertEqual(server.stream_state('', fh.name, '1.2.3.4', False),
+                             'absent')
+
+    def test_a_broken_tshark_claims_nothing(self):
+        # An error is not an answer; saying "absent" here would be a finding
+        # invented out of a missing tool.
+        self.fake([], 'tshark not installed')
+        with tempfile.NamedTemporaryFile(suffix='.pcapng') as fh:
+            self.assertEqual(server.stream_state('', fh.name, '1.2.3.4', False), '')
+
+    def test_ipv6_uses_the_right_filter_field(self):
+        self.fake([])
+        with tempfile.NamedTemporaryFile(suffix='.pcapng') as fh:
+            server.stream_state('', fh.name, '2606:4700::1111', False)
+        self.assertTrue(self.calls[0].startswith('ipv6.addr'), self.calls)
+
+
+class TrafficView(unittest.TestCase):
+    def test_a_directory_with_no_capture_is_explained_not_blank(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = server.traffic_view(tmp)
+            self.assertFalse(got['ok'])
+            self.assertIn('no capture', got['error'])
+
+    def test_a_missing_directory_is_not_a_crash(self):
+        self.assertFalse(server.traffic_view('/nonexistent/dir')['ok'])
+        self.assertFalse(server.traffic_view('')['ok'])
+
+
+class TrafficIsWhereTheCallSiteIs(unittest.TestCase):
+    """It was first built as a tab in the strip at the foot of the page, which
+    meant clicking in one place and reading the answer in another — and nothing
+    said the frames were clickable at all."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(INDEX, encoding='utf-8') as fh:
+            cls.page = fh.read()
+
+    def test_the_drawer_is_rendered_inside_the_peer_card(self):
+        card = self.page.split('class="peer ${card.tone}"', 1)[1].split('`;', 1)[0]
+        self.assertIn('class="drawer', card)
+        self.assertIn('class="reveal"', card)
+
+    def test_the_bottom_strip_holds_the_log_and_nothing_else(self):
+        strip = self.page.split('class="logstrip"', 1)[1].split('</div>\n</div>', 1)[0]
+        self.assertIn('id="log"', strip)
+        self.assertNotIn('id="traffic"', strip)
+        self.assertNotIn('tabTraffic', self.page)
+
+    def test_the_control_says_what_it_does(self):
+        # A clickable region with no label is not a control, it is a rumour.
+        self.assertIn("t('traffic.open')", self.page)
+
+
+class RenderBody(unittest.TestCase):
+    """A decrypted body is as likely to be protobuf as JSON. Rendered as UTF-8,
+    the useful parts — versions, package names, identifiers — drown in
+    replacement characters."""
+
+    def test_text_stays_text(self):
+        body = server.render_body(b'{"user":"anna","ok":true}')
+        self.assertFalse(body['binary'])
+        self.assertEqual(body['text'], '{"user":"anna","ok":true}')
+        self.assertEqual(body['hex'], '')
+
+    def test_protobuf_is_offered_as_its_printable_runs(self):
+        raw = (b'\xca\x02\x05\x10\xa5\x07\x08\x03\n\x054.0.0\x12\x14'
+               b'\x18\xd2\x02!\n\x0726.22.1\x12\x0cru.oneme.app\x00\xff\xfe')
+        body = server.render_body(raw)
+        self.assertTrue(body['binary'])
+        self.assertIn('4.0.0', body['text'])
+        self.assertIn('ru.oneme.app', body['text'])
+        # and the bytes remain reachable rather than being summarised away
+        self.assertIn('00000000', body['hex'])
+
+    def test_short_runs_are_noise_and_are_left_out(self):
+        body = server.render_body(b'\x00\x01ab\x02\x03cd\x04' * 8)
+        self.assertTrue(body['binary'])
+        self.assertEqual(body['text'], '')
+
+    def test_the_hexdump_carries_an_ascii_gutter(self):
+        body = server.render_body(b'\x00' * 4 + b'HTTP' + b'\xff' * 8)
+        first = body['hex'].splitlines()[0]
+        self.assertTrue(first.startswith('00000000  '))
+        self.assertTrue(first.endswith('....HTTP........'))
+
+    def test_a_huge_body_is_bounded_and_says_it_was_cut(self):
+        body = server.render_body(b'A' * (server.BODY_CHARS + 500))
+        self.assertTrue(body['clipped'])
+        self.assertEqual(len(body['text']), server.BODY_CHARS)
+
+    def test_an_empty_body_is_not_called_binary(self):
+        self.assertFalse(server.render_body(b'')['binary'])
+
+
+class FindingsDoNotRedrawThemselves(unittest.TestCase):
+    """The panel used to reload every three idle seconds. Rebuilding it discards
+    any drawer the reader has opened, so opening one and having a poll land
+    immediately after looked like the drawer closing itself."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(INDEX, encoding='utf-8') as fh:
+            cls.page = fh.read()
+
+    def test_the_poll_reloads_only_on_the_edge_out_of_running(self):
+        poll = self.page.split('async function pollLog', 1)[1].split('\n}', 1)[0]
+        self.assertIn('wasRunning && !RUN_RUNNING', poll)
+        # the unconditional form that caused it
+        self.assertNotIn("if (!data.running && data.output && data.output ===", poll)
+
+    def test_an_identical_redraw_touches_nothing(self):
+        findings = self.page.split('async function loadFindings', 1)[1].split('\n}', 1)[0]
+        self.assertIn('box.dataset.rendered === rendered', findings)
+        self.assertIn('box.dataset.rendered = rendered', findings)
