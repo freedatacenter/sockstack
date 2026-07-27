@@ -88,6 +88,22 @@ the intended remote use is `ssh -L 8722:127.0.0.1:8722 user@analysis-host`.
 
 ---
 
+## Before a demo, or after anything changed — one command
+
+```bash
+./scripts/preflight.sh --device emulator-5554 --package com.example.app
+```
+
+It walks the chain — adb, tshark, friTap, the device, root, frida-server and its
+version against the host's, tcpdump, the target, the panel — and then does the
+only check that proves anything: a twenty-second real run, whose records, Java
+bridge and pcap decide the verdict. Every failure prints what to do about it, and
+the exit status is 0 only when nothing failed.
+
+`--no-canary` skips the run when you only want the inventory.
+
+---
+
 ## Step 2 — check the toolchain before involving a device
 
 This runs against an ordinary local process. It proves that friTap starts, that
