@@ -466,6 +466,13 @@ What they do and do not cover, since this matters more than the count:
 
 Everything that cost real debugging time is in [`docs/GOTCHAS.md`](docs/GOTCHAS.md).
 
+## Contributing
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) — how to run the tests, when the agent
+bundle has to be rebuilt, what to redact before pasting output into a public
+issue, and the one rule the rest of it follows from: the tool must never claim
+to know something it does not.
+
 ## Handle the output carefully
 
 A run directory holds TLS session secrets and decrypted traffic. It can expose
