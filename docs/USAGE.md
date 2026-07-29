@@ -453,6 +453,33 @@ sections, because there is nothing to read them from.
 
 ---
 
+## Step 8 — retire old runs
+
+A run leaves two kinds of thing behind. The findings — `socket_trace.json`, the
+summary, the manifest — are small and are the reason you ran it. The capture is
+most of the bytes, and next to it sit `sslkeylog.txt` and the decrypted bodies
+it unlocked. Keeping the first indefinitely is archiving. Keeping the second
+indefinitely means a lab machine slowly accumulates other people's TLS session
+keys because nobody got round to it.
+
+```bash
+./scripts/sweep.py ~                    # what would happen — writes nothing
+./scripts/sweep.py ~ --yes              # slim: capture, keylog and bodies go
+./scripts/sweep.py ~ --remove --yes     # delete the directories outright
+```
+
+Slimming is the default, and it keeps the run readable as a record. Runs newer
+than a week are left alone, as are the three most recent whatever their age —
+the last few runs are what you reach for when something breaks, and a sweep that
+takes those away is one you stop running.
+
+Only directories that look like runs are ever touched, and nothing is written
+without `--yes`. Check the dry run before trusting it with a case directory:
+slimming a finished investigation removes the capture you would need to
+re-examine it, and that is a decision, not housekeeping.
+
+---
+
 ## When something goes wrong
 
 | Symptom | Cause |
