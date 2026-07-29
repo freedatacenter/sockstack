@@ -127,8 +127,27 @@ def is_network_device(serial):
     return bool(host) and port.isdigit()
 
 
+def device_hint(state, network):
+    """Translation key for "why is this device not usable, and what fixes it".
+
+    One message for every unusable state is worse than none, because the states
+    have different cures and the wrong cure sends the reader off for minutes.
+    `unauthorized` really does mean a prompt is waiting on the screen. `offline`
+    on a network device almost never does — it means the path to it died, and
+    the ssh tunnel is the first thing to look at. Telling that operator to
+    accept a prompt points them at a device they cannot even reach.
+    """
+    if state == 'device':
+        return ''
+    if state == 'unauthorized':
+        return 'dev.hint.unauth'
+    if state == 'offline':
+        return 'dev.hint.offline.net' if network else 'dev.hint.offline.usb'
+    return 'dev.hint.other'
+
+
 def parse_devices(text):
-    """`adb devices -l` -> [{serial, state, model}].
+    """`adb devices -l` -> [{serial, state, model, network, hint}].
 
     Devices that are present but not usable — unauthorized, offline — are kept
     and labelled rather than filtered out: "no devices" when one is plugged in
@@ -146,8 +165,10 @@ def parse_devices(text):
         for field in fields[2:]:
             if field.startswith('model:'):
                 model = field[len('model:'):].replace('_', ' ')
+        network = is_network_device(fields[0])
         devices.append({'serial': fields[0], 'state': fields[1], 'model': model,
-                        'network': is_network_device(fields[0])})
+                        'network': network,
+                        'hint': device_hint(fields[1], network)})
     return devices
 
 

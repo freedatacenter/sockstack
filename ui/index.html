@@ -58,6 +58,7 @@
   .btn:hover { border-color: var(--accent); }
   .btn.primary { background: var(--accent); color: var(--bg); border: none; font-weight: 600; }
   .btn:disabled { opacity: .4; cursor: default; border-color: var(--line); }
+  .btn.small { padding: 6px 12px; font-size: 12px; border-radius: 7px; cursor: pointer; }
   .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer;
             font: 500 12px/1 var(--mono); color: var(--mid); }
   .toggle input { display: none; }
@@ -386,7 +387,7 @@ const STRINGS = {
                   'The target is driven through the screen mirror.',
     'launch.security': 'No authentication · drives the device. Reach it from ' +
                        'elsewhere over an SSH tunnel only.',
-    'card.devices': '1 · Devices · attached',
+    'card.devices': '1 · Device',
     'connect.label': 'a device over the network (emulator, stand, wireless debugging)',
     'connect.hint': 'host, or host:port — 5555 assumed',
     'remote.why': 'The device is on a machine you reach with an SSH key? Do not ' +
@@ -483,7 +484,12 @@ const STRINGS = {
     'runs.bridgeFailed': 'java bridge failed',
     'dev.none': 'Nothing attached. Check the cable, or ' +
                 '<span class="mono">adb start-server</span>.',
-    'dev.unauthorised': 'accept the authorisation prompt on the device',
+    'dev.hint.unauth': 'accept the authorisation prompt on the device',
+    'dev.hint.offline.net': 'the path to this device died — check that the ssh ' +
+                            'tunnel is still up, then reconnect',
+    'dev.hint.offline.usb': 'the device stopped answering — replug it, then reconnect',
+    'dev.hint.other': 'not usable in this state',
+    'act.reconnect': 'reconnect',
     'dev.frida.on': 'frida-server running',
     'dev.frida.off': 'frida-server not running — sockstack starts it on demand',
     'dev.pickFirst': 'pick a device that reports READY first',
@@ -515,7 +521,7 @@ const STRINGS = {
                   'Управление целью — через зеркало экрана.',
     'launch.security': 'Без аутентификации · управляет устройством. Наружу — ' +
                        'только через SSH-туннель.',
-    'card.devices': '1 · Устройства · подключено',
+    'card.devices': '1 · Устройство',
     'connect.label': 'устройство по сети (эмулятор, стенд, беспроводная отладка)',
     'connect.hint': 'хост или хост:порт — по умолчанию 5555',
     'remote.why': 'Устройство на машине, куда вы ходите по SSH-ключу? Не указывайте ' +
@@ -611,7 +617,12 @@ const STRINGS = {
     'runs.bridgeFailed': 'java-мост не поднялся',
     'dev.none': 'Ничего не подключено. Проверьте кабель или ' +
                 '<span class="mono">adb start-server</span>.',
-    'dev.unauthorised': 'подтвердите авторизацию на самом устройстве',
+    'dev.hint.unauth': 'подтвердите авторизацию на самом устройстве',
+    'dev.hint.offline.net': 'связь с устройством пропала — проверьте, жив ли ' +
+                            'ssh-туннель, и переподключитесь',
+    'dev.hint.offline.usb': 'устройство перестало отвечать — переподключите кабель',
+    'dev.hint.other': 'в этом состоянии устройство использовать нельзя',
+    'act.reconnect': 'переподключить',
     'dev.frida.on': 'frida-server работает',
     'dev.frida.off': 'frida-server не запущен — sockstack поднимет его сам',
     'dev.pickFirst': 'сначала выберите устройство в состоянии READY',
@@ -699,17 +710,28 @@ async function loadDevices() {
     const ready = d.state === 'device';
     const row = document.createElement('div');
     row.className = 'device' + (ready ? '' : ' off');
+    row.dataset.serial = d.serial;
     row.innerHTML =
       `<div class="icon">${ready ? '📱' : '⛔'}</div>
        <div style="flex:1;min-width:0">
          <div class="name">${esc(d.serial)}${d.model ? ' · ' + esc(d.model) : ''}</div>
          <div class="meta" data-meta="${esc(d.serial)}">${ready ? '…' :
-           t('dev.unauthorised')}</div>
+           t(d.hint || 'dev.hint.other')}</div>
        </div>
+       ${!ready && d.network ? `<button class="btn small redial">${t('act.reconnect')}</button>` : ''}
        <span class="state" style="color:${ready ? 'var(--accent)' : 'var(--warn)'}">
          ${ready ? '<span class="dot" style="background:var(--accent)"></span>READY'
                  : d.state.toUpperCase()}</span>
        ${d.network ? `<span class="unplug" title="${t('act.disconnect')}">✕</span>` : ''}`;
+    const redial = row.querySelector('.redial');
+    if (redial) redial.onclick = async event => {
+      event.stopPropagation();                     // not a device pick
+      redial.disabled = true;
+      await post('/api/disconnect', {address: d.serial});
+      const back = await post('/api/connect', {address: d.serial});
+      say('connectStatus', back.output, !back.ok);
+      loadDevices();
+    };
     if (ready) {
       row.onclick = () => { select.value = d.serial; markSelected(); onDeviceChange(); };
     }
@@ -734,9 +756,13 @@ async function loadDevices() {
   say('launchStatus', data.error || '', !!data.error);
 }
 function markSelected() {
+  // An exact serial, and only when one is actually selected. Matching by prefix
+  // made `127.0.0.1:5555` light up for `127.0.0.1:55551`, and — worse — an empty
+  // selection is a prefix of everything, so a screen whose only device was
+  // offline painted that device as the chosen one.
+  const chosen = dev();
   [...$('deviceList').children].forEach(row => {
-    const name = row.querySelector('.name');
-    row.classList.toggle('on', !!name && name.textContent.startsWith(dev()));
+    row.classList.toggle('on', !!chosen && row.dataset.serial === chosen);
   });
 }
 async function loadDeviceInfo() {

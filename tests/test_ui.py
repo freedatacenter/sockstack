@@ -341,6 +341,57 @@ class NetworkDevice(unittest.TestCase):
         self.assertFalse(server.is_network_device('weird:serial'))
         self.assertFalse(server.is_network_device(':5555'))
 
+
+class DeviceHint(unittest.TestCase):
+    """An unusable device has to say which cure applies to it. One message for
+    every bad state points half its readers at the wrong thing."""
+
+    def test_a_ready_device_needs_no_excuse(self):
+        self.assertEqual(server.device_hint('device', False), '')
+
+    def test_unauthorised_really_is_the_prompt_on_the_screen(self):
+        self.assertEqual(server.device_hint('unauthorized', False), 'dev.hint.unauth')
+
+    def test_an_offline_network_device_blames_the_path_not_the_prompt(self):
+        hint = server.device_hint('offline', True)
+        self.assertEqual(hint, 'dev.hint.offline.net')
+        self.assertNotEqual(hint, 'dev.hint.unauth')
+
+    def test_an_offline_usb_device_blames_the_cable(self):
+        self.assertEqual(server.device_hint('offline', False), 'dev.hint.offline.usb')
+
+    def test_an_unknown_state_admits_it_rather_than_guessing(self):
+        self.assertEqual(server.device_hint('bootloader', False), 'dev.hint.other')
+
+    def test_the_listing_carries_the_hint(self):
+        listing = ('List of devices attached\n'
+                   '127.0.0.1:5555\toffline\n'
+                   'emulator-5554\tdevice model:sdk_gphone64_x86_64\n')
+        devices = server.parse_devices(listing)
+        self.assertEqual(devices[0]['hint'], 'dev.hint.offline.net')
+        self.assertEqual(devices[1]['hint'], '')
+
+
+class SelectionIsExact(unittest.TestCase):
+    """The device row highlight said "this is the one you picked". Matching by
+    prefix made that a lie twice over: `127.0.0.1:5555` lit up for a serial that
+    merely started the same way, and an empty selection — no usable device at
+    all — is a prefix of every row, so a dead device was painted as chosen."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(INDEX, encoding='utf-8') as fh:
+            cls.page = fh.read()
+
+    def test_the_highlight_no_longer_matches_by_prefix(self):
+        marker = self.page.split('function markSelected()', 1)[1].split('}', 1)[0]
+        self.assertNotIn('startsWith', marker)
+
+    def test_it_compares_a_whole_serial_and_only_when_one_is_chosen(self):
+        marker = self.page.split('function markSelected()', 1)[1].split('\n}', 1)[0]
+        self.assertIn('row.dataset.serial === chosen', marker)
+        self.assertIn('!!chosen', marker)
+
     def test_the_device_list_carries_the_flag(self):
         listing = ('List of devices attached\n'
                    '192.168.100.88:5555   device product:x model:Stand device:y\n'
