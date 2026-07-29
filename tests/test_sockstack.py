@@ -961,6 +961,48 @@ class FtraceAgainstRealKernelOutput(unittest.TestCase):
         self.assertIn('sport=0', FTRACE_REAL.splitlines()[0])
 
 
+class FtraceScoping(unittest.TestCase):
+    """An empty `set_event_pid` is not "match nothing", it is "no filter". A
+    stream started that way collects every process on the device and files their
+    destinations under the target — turning the cross-check into a fabricator of
+    traffic the app never sent."""
+
+    def source(self, pids):
+        src = sockstack.FtraceSocketEvents(serial=None)
+        src.pids = list(pids)
+        return src
+
+    def dial(self, pid):
+        return {'ip': '198.51.100.7', 'port': 443, 'proto': 'tcp',
+                'kind': 'dial', 'established': False, 'pid': pid, 'comm': 'x'}
+
+    def test_an_event_from_an_untracked_pid_is_dropped(self):
+        src = self.source([4242])
+        self.assertFalse(src.note(self.dial(9999)))
+        self.assertEqual(src.artifact()['destinations_confirmed'], 0)
+        self.assertNotIn(('198.51.100.7', 443, 'tcp'), src._dialled)
+
+    def test_an_event_from_a_tracked_pid_still_counts(self):
+        src = self.source([4242])
+        self.assertTrue(src.note(self.dial(4242)))
+        self.assertIn(('198.51.100.7', 443, 'tcp'), src._dialled)
+
+    def test_a_stream_that_died_is_not_reported_as_an_empty_one(self):
+        src = self.source([4242])
+        src.status = 'running'
+        src._ended_early = True
+        artifact = src.artifact()
+        self.assertEqual(artifact['status'], 'stream-died')
+        self.assertNotEqual(artifact['status'], 'no-events')
+        self.assertIn('ended before the run did', artifact['detail'])
+
+    def test_a_quiet_app_is_still_reported_as_quiet(self):
+        src = self.source([4242])
+        src.status = 'running'
+        artifact = src.artifact()
+        self.assertEqual(artifact['status'], 'no-events')
+
+
 class FtraceLedger(unittest.TestCase):
     def ledger(self):
         return sockstack.FtraceSocketEvents(serial=None)

@@ -8,7 +8,7 @@
 # other check exists to tell you *which* link is broken when it does not.
 #
 # Usage:
-#   ./scripts/preflight.sh --device emulator-5554 --package ru.oneme.app
+#   ./scripts/preflight.sh --device emulator-5554 --package com.example.app
 #   ./scripts/preflight.sh --device emulator-5554 --no-canary   # checks only
 #
 # Exit status is 0 only when every check passed. A failed check prints what to
@@ -24,10 +24,14 @@ DURATION=20
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --device)   SERIAL="${2:-}"; shift 2 ;;
-    --package)  PACKAGE="${2:-}"; shift 2 ;;
-    --panel)    PANEL="${2:-}"; shift 2 ;;
-    --python)   PYTHON="${2:-}"; shift 2 ;;
+    # `${2:-}` defaulted a missing value to empty, and `shift 2` on a single
+    # remaining argument shifts nothing — so `--device` with no value left $1 as
+    # `--device` and spun this loop forever. In a script whose whole purpose is
+    # the ten minutes before a demo, a typo must not hang the terminal.
+    --device)   SERIAL="${2:?--device needs a device id}";     shift 2 ;;
+    --package)  PACKAGE="${2:?--package needs a package name}"; shift 2 ;;
+    --panel)    PANEL="${2:?--panel needs a URL}";              shift 2 ;;
+    --python)   PYTHON="${2:?--python needs a path}";           shift 2 ;;
     --no-canary) CANARY=0; shift ;;
     -h|--help)  sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1"; exit 2 ;;

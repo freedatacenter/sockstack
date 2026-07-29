@@ -803,6 +803,7 @@ class FtraceSocketEvents:
         self._reader = None
         self._process = None
         self._refresher = None
+        self._ended_early = False
 
     # -- lifecycle ---------------------------------------------------------
     def start(self):
@@ -839,6 +840,21 @@ class FtraceSocketEvents:
             print(f'[i] ftrace source off: {self.detail}')
             return self
         self._refresh_pids()
+        # An empty `set_event_pid` is not "match nothing" — it is "no filter",
+        # so a reader started without pids collects every process on the device
+        # and files their destinations under the target. That turns this source
+        # from a cross-check into a fabricator: strangers' connections would
+        # arrive in the report as traffic the tracer missed. The uid can genuinely
+        # be unknown here (`--attach` to a pid whose package cannot be resolved),
+        # so this is a reachable state, not a theoretical one. Refuse to look
+        # rather than look at the wrong thing.
+        if not self.pids:
+            self.status = 'no-pids'
+            self.detail = ('the target had no resolvable pids, and an unfiltered '
+                           'event stream would collect the whole device')
+            print(f'[i] ftrace source off: {self.detail}')
+            self._teardown()
+            return self
         self._process = priv_stream(
             self.serial,
             f'echo $$ > {FTRACE_PIDFILE} ; exec cat {instance}/trace_pipe')
@@ -981,6 +997,14 @@ class FtraceSocketEvents:
         """
         if not event:
             return False
+        # Second rail under the kernel's own filter. `start()` refuses to run
+        # without pids, but the filter is rewritten from a background thread as
+        # the app's processes come and go, and a window where the kernel is
+        # broader than we believe must not become a destination attributed to
+        # the target. An event from a pid we are not tracking is dropped, not
+        # counted as something the tracer missed.
+        if self.pids and event.get('pid') not in self.pids:
+            return False
         key = (event['ip'], event['port'], event['proto'])
         with self._lock:
             if event.get('kind') == 'dial':
@@ -1004,14 +1028,28 @@ class FtraceSocketEvents:
             self.lines_seen += 1
             if self.note(parse_ftrace_socket_event(line)):
                 self.events += 1
+        # Falling out of that loop before anyone asked to stop means the stream
+        # died under us — adb dropped, su refused, SELinux closed trace_pipe. The
+        # silence that follows is indistinguishable from a quiet app, and the
+        # report would have called it "no TCP connection was made". Record the
+        # difference; deciding what it means is not this reader's job.
+        if not self._stop.is_set():
+            self._ended_early = True
 
     # -- result ------------------------------------------------------------
     def artifact(self):
         with self._lock:
             peers = dict(self._peers)
         if self.status == 'running':
-            self.status = 'ok' if self.lines_seen else 'no-events'
-            if not self.lines_seen:
+            if self._ended_early:
+                self.status = 'stream-died'
+                self.detail = ('the event stream ended before the run did — the '
+                               'device connection, su or SELinux closed it. What '
+                               'it saw up to that point is kept; what came after '
+                               'was not watched by anything')
+            else:
+                self.status = 'ok' if self.lines_seen else 'no-events'
+            if self.status == 'no-events':
                 self.detail = ('the tracepoint was on and produced nothing — no '
                                'TCP connection was made by the filtered pids, or '
                                'the filter never matched the right ones')
@@ -1814,6 +1852,15 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
         for entry in missed:
             lines.append(f'  - seen only by the event stream: '
                          f'`{format_peer(entry["ip"], entry.get("port"))}`')
+    elif ftrace_status == 'stream-died':
+        # Not the same claim as "did not run": part of the window was watched.
+        # Saying either "it ran" or "it did not" would be false about half of it.
+        lines.append(
+            f'- **Kernel event stream stopped part-way through the run**: '
+            f'{ftrace_blob.get("detail") or "no detail"}. It recorded '
+            f'{ftrace_blob.get("events_parsed", 0)} connection event(s) before '
+            f'that; after it, nothing was watching for short-lived connections, '
+            f'so silence there is unmeasured rather than empty.')
     elif ftrace_status and ftrace_status != 'not-run':
         lines.append(f'- **Kernel event stream did not run** ({ftrace_status}): '
                      f'{ftrace_blob.get("detail") or "no detail"}. Short-lived '
