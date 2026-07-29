@@ -575,6 +575,39 @@ class AClosedTabIsNotACrash(unittest.TestCase):
             self.handler(ValueError('something else'))._send(200, {'ok': True})
 
 
+class TheRunPanelDoesNotContradictItself(unittest.TestCase):
+    """Three faults that met on one screen: a refusal that outlived the run it
+    described, a log cleared before anyone knew the run had started, and results
+    that were only shown when the output box still matched."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(INDEX, encoding='utf-8') as fh:
+            cls.page = fh.read()
+
+    def test_the_log_is_cleared_only_after_a_successful_start(self):
+        handler = self.page.split("$('start').onclick", 1)[1].split('};', 1)[0]
+        self.assertIn("if (data.ok) { $('log').innerHTML = ''", handler)
+
+    def test_a_refusal_is_withdrawn_when_the_state_changes(self):
+        poll = self.page.split('async function pollLog()', 1)[1].split('\n}', 1)[0]
+        self.assertIn("if (RUN_RUNNING !== wasRunning) say('runStatus', '')", poll)
+
+    def test_results_come_from_the_run_that_finished(self):
+        poll = self.page.split('async function pollLog()', 1)[1].split('\n}', 1)[0]
+        self.assertIn('loadFindings(data.output)', poll)
+        self.assertNotIn("data.output === $('output').value", poll)
+
+    def test_the_runners_english_has_a_russian_rendering(self):
+        table = self.page.split('  ru: {', 1)[1].split('\n  },', 1)[0]
+        for key in ('run.busy', 'run.noOutput', 'run.notRunning'):
+            self.assertIn(f"'{key}'", table)
+
+    def test_an_unmapped_message_is_passed_through_not_swallowed(self):
+        helper = self.page.split('function serverSays(text)', 1)[1].split('\n}', 1)[0]
+        self.assertIn("(text || '')", helper)
+
+
 class EventStreamOnlyIsItsOwnAnswer(unittest.TestCase):
     """A destination only the kernel event stream saw is not the same finding as
     one the poller also saw. Folding them together throws away the measurement

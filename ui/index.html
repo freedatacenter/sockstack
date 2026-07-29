@@ -498,6 +498,11 @@ const STRINGS = {
     'dev.frida.on': 'frida-server running',
     'dev.frida.off': 'frida-server not running — sockstack starts it on demand',
     'dev.pickFirst': 'pick a device that reports READY first',
+    'run.busy': 'a run is already in progress — wait for it, or press stop',
+    'run.noOutput': 'choose an output directory',
+    'run.notRunning': 'nothing is running',
+    'run.stopping': 'asked the run to finish early',
+    'run.provisioning': 'provisioning; watch the log',
     'st.idle': 'idle',
     'st.running': 'running',
     'st.installing': 'installing…',
@@ -638,6 +643,11 @@ const STRINGS = {
     'dev.frida.on': 'frida-server работает',
     'dev.frida.off': 'frida-server не запущен — sockstack поднимет его сам',
     'dev.pickFirst': 'сначала выберите устройство в состоянии READY',
+    'run.busy': 'прогон уже идёт — дождитесь его или нажмите стоп',
+    'run.noOutput': 'укажите каталог для результатов',
+    'run.notRunning': 'ничего не запущено',
+    'run.stopping': 'попросили прогон завершиться',
+    'run.provisioning': 'готовим устройство — смотрите журнал',
     'st.idle': 'простой',
     'st.running': 'идёт',
     'st.installing': 'ставлю…',
@@ -703,6 +713,22 @@ const esc = t => String(t == null ? '' : t).replace(/[&<>]/g,
   c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
 function say(id, text, bad) {
   const n = $(id); n.textContent = text || ''; n.className = 'status' + (bad ? ' bad' : '');
+}
+// The runner answers in English because its messages are also the CLI's. The
+// panel is not, and an untranslated refusal beside a Russian button reads as a
+// fault in the tool rather than a sentence about the run. Anything unmapped is
+// passed through unchanged: a message the reader cannot act on is still better
+// than one the page silently swallowed.
+const SERVER_SAYS = {
+  'a run is already in progress': 'run.busy',
+  'choose an output directory': 'run.noOutput',
+  'nothing is running': 'run.notRunning',
+  'asked the run to finish early': 'run.stopping',
+  'provisioning; watch the log': 'run.provisioning',
+};
+function serverSays(text) {
+  const key = SERVER_SAYS[(text || '').trim()];
+  return key ? t(key) : (text || '');
 }
 
 // ---- devices --------------------------------------------------------------
@@ -860,8 +886,8 @@ $('stage').addEventListener('click', e => {
 });
 
 // ---- findings -------------------------------------------------------------
-async function loadFindings() {
-  const directory = $('output').value;
+async function loadFindings(dir) {
+  const directory = dir || $('output').value;
   if (!directory) return;
   const data = await get('/api/attribution?dir=' + encodeURIComponent(directory));
   const box = $('peers');
@@ -1038,6 +1064,11 @@ async function pollLog() {
   }
   const wasRunning = RUN_RUNNING;
   RUN_RUNNING = !!data.running;
+  // A refusal describes a moment, not a state. "A run is already in progress"
+  // was written once and never withdrawn, so it stayed on screen after that run
+  // finished -- next to an idle badge and a button that now worked, telling the
+  // reader something the panel itself no longer believed.
+  if (RUN_RUNNING !== wasRunning) say('runStatus', '');
   $('stop').disabled = !data.running;
   $('start').disabled = !!data.running;
   const pill = $('statusPill');
@@ -1049,22 +1080,33 @@ async function pollLog() {
   // Only on the edge from running to finished. Reloading on every idle poll
   // rebuilt the whole panel every three seconds, which threw away any drawer
   // the reader had just opened -- it looked like the drawer closing itself.
-  if (wasRunning && !RUN_RUNNING && data.output === $('output').value) loadFindings();
+  // Show the results of the run that finished, whatever the box now says. This
+  // used to require the two to match, so a run whose output box had since been
+  // re-filled -- which a refused second start does by itself -- completed with
+  // seven peers and eleven call sites and put none of them on screen.
+  if (wasRunning && !RUN_RUNNING && data.output) {
+    if (outputIsAuto) $('output').value = data.output;
+    loadFindings(data.output);
+  }
   setTimeout(pollLog, data.running ? 1000 : 3000);
 }
 
 $('start').onclick = async () => {
   if (!$('output').value.trim()) { outputIsAuto = true; fillOutputIfUntouched(); }
-  $('log').innerHTML = ''; since = 0;
   say('runStatus', '');
   const data = await post('/api/run', {
     device: dev(), package: $('package').value, output: $('output').value,
     duration: $('duration').value, attach: $('attach').checked,
     anti_root: $('antiRoot').checked, ftrace: $('ftrace').checked});
+  // Clear the log only once the run is known to have started. Clearing first
+  // meant a refused start wiped the log of the run that was actually going --
+  // the one thing that would have explained the refusal -- and left an empty
+  // panel that looked like a tool doing nothing at all.
+  if (data.ok) { $('log').innerHTML = ''; since = 0; }
   // Next to the button that was pressed. This message used to go to the status
   // line at the foot of the other column, which made a refusal look like a
   // button that does nothing.
-  if (!data.ok) { say('runStatus', data.message, true); $('output').focus(); }
+  else { say('runStatus', serverSays(data.message), true); $('output').focus(); }
 };
 $('stop').onclick = () => post('/api/stop');
 
