@@ -961,6 +961,34 @@ class FtraceAgainstRealKernelOutput(unittest.TestCase):
         self.assertIn('sport=0', FTRACE_REAL.splitlines()[0])
 
 
+class BodiesCarryBothEnds(unittest.TestCase):
+    """A reply travels towards the device, so a body keyed only by destination
+    can never be an answer. Filtering on that alone left a GET with nothing
+    under it and hid the response that made the request worth reading."""
+
+    def collect(self, rows):
+        def fake(_path, field, *fields):
+            self.assertIn('ip.src', fields)     # both ends must be requested
+            self.assertIn('ip.dst', fields)
+            return rows if field == 'http.file_data' else []
+        return fake
+
+    def test_a_body_reports_destination_and_source(self):
+        row = '203.0.113.9\t\t10.0.2.15\t\t' + b'hello'.hex()
+        bodies, _ = sockstack.collect_bodies('p', 'e', self.collect([row]))
+        self.assertEqual(len(bodies), 1)
+        dst, src, raw = bodies[0]
+        self.assertEqual((dst, src, raw), ('203.0.113.9', '10.0.2.15', b'hello'))
+
+    def test_an_answer_keeps_the_peer_as_its_source(self):
+        row = '10.0.2.15\t\t203.0.113.9\t\t' + b'{"task":1}'.hex()
+        bodies, _ = sockstack.collect_bodies('p', 'e', self.collect([row]))
+        dst, src, raw = bodies[0]
+        self.assertEqual(dst, '10.0.2.15')
+        self.assertEqual(src, '203.0.113.9')
+        self.assertEqual(raw, b'{"task":1}')
+
+
 class FtraceScoping(unittest.TestCase):
     """An empty `set_event_pid` is not "match nothing", it is "no filter". A
     stream started that way collects every process on the device and files their

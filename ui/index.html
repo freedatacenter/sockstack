@@ -434,6 +434,8 @@ const STRINGS = {
     'traffic.textBody': 'text',
     'traffic.runs': 'runs',
     'traffic.hex': 'hex',
+    'traffic.sent': 'sent by the app',
+    'traffic.received': 'answer from the server',
     'traffic.strings': 'strings',
     'traffic.noStrings': 'nothing printable in it at all',
     'traffic.encrypted': 'This address is in the capture, but its TLS was never ' +
@@ -572,6 +574,8 @@ const STRINGS = {
     'traffic.textBody': 'текст',
     'traffic.runs': 'фрагм.',
     'traffic.hex': 'hex',
+    'traffic.sent': 'отправило приложение',
+    'traffic.received': 'ответ сервера',
     'traffic.strings': 'строки',
     'traffic.noStrings': 'печатаемого нет вовсе',
     'traffic.encrypted': 'Этот адрес в захвате есть, но его TLS не расшифрован — ' +
@@ -963,7 +967,11 @@ async function loadTraffic(peer, box) {
                           : t('traffic.textBody');
     const hex = b.hex ? `<span class="hexlink" data-body="${i}">${t('traffic.hex')}</span>`
                       : '';
-    return `<div class="body-head">${t('traffic.body')} ${i + 1} · ${b.bytes}
+    const way = b.direction
+      ? `<span class="badge ${b.direction === 'sent' ? 'good' : 'unknown'}">` +
+        `${t(b.direction === 'sent' ? 'traffic.sent' : 'traffic.received')}</span> `
+      : '';
+    return `<div class="body-head">${way}${t('traffic.body')} ${i + 1} · ${b.bytes}
        ${t('traffic.bytes')} · ${kind} · ${esc(b.ip)} ${hex}</div>
      <div class="body-text" data-text="${i}">${esc(b.text) ||
        `<span style="color:var(--faint)">${t('traffic.noStrings')}</span>`}</div>

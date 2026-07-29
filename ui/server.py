@@ -446,13 +446,19 @@ def traffic_view(out_dir, peer=''):
 
     placed, fragmented = sockstack.collect_bodies(pcap, enc)
     if wanted:
-        placed = [(ip, text) for ip, text in placed if ip == wanted]
+        # Either end. A body whose destination is this peer was sent by the app;
+        # one whose source is this peer is the answer. Keeping only the first
+        # showed a GET with nothing under it and hid the reply that made the
+        # request worth looking at.
+        placed = [row for row in placed if wanted in (row[0], row[1])]
     truncated = len(placed) > MAX_BODIES
     bodies = []
-    for address, raw in placed[:MAX_BODIES]:
+    for dst, src, raw in placed[:MAX_BODIES]:
         body = render_body(raw)
         truncated = truncated or body.pop('clipped', False)
-        bodies.append(dict(body, ip=address))
+        bodies.append(dict(body, ip=dst if dst else src,
+                           direction='sent' if wanted and dst == wanted
+                                     else 'received' if wanted else ''))
     return {'ok': True, 'error': '', 'peer': peer, 'requests': requests,
             'bodies': bodies, 'truncated': truncated, 'fragmented': fragmented,
             'state': stream_state(pcap, enc, wanted, bool(requests or bodies)),

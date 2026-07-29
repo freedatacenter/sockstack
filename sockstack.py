@@ -1532,16 +1532,21 @@ BODY_SOURCES = (('enc', 'http2.body.reassembled.data', False),
 
 
 def collect_bodies(pcap, enc, collect=None):
-    """[(destination_ip, raw_bytes)], plus whether any of it is fragmented.
+    """[(destination_ip, source_ip, raw_bytes)], plus whether any is fragmented.
 
     Raw bytes, not text: a decrypted body is as likely to be protobuf as it is
     to be JSON, and decoding it here would leave every caller holding a string
     of replacement characters with no way back to what was actually sent.
 
     One definition of "where a body comes from", used by the written report and
-    by the panel. The destination rides along because a body nobody can place is
+    by the panel. The addresses ride along because a body nobody can place is
     evidence you cannot act on — the capture is device-wide, and the address is
     what ties a payload to the process that was traced.
+
+    Both endpoints, not just the destination. A reply travels towards the device,
+    so filtering on destination alone keeps requests and silently drops every
+    answer — and for a server that hands work to an app, the answer is the half
+    worth reading. Which end is the peer is the caller's question, not this one's.
     """
     if collect is None:
         def collect(path, flt, *fields):
@@ -1552,7 +1557,8 @@ def collect_bodies(pcap, enc, collect=None):
     for source, field, is_fragment in BODY_SOURCES:
         if is_fragment and reassembled_found:
             continue           # whole messages were available; do not mix in parts
-        got = collect(paths[source], field, 'ip.dst', 'ipv6.dst', field)
+        got = collect(paths[source], field,
+                      'ip.dst', 'ipv6.dst', 'ip.src', 'ipv6.src', field)
         if got and not is_fragment and field.startswith('http2.body'):
             reassembled_found = True
         if got and is_fragment:
@@ -1561,7 +1567,7 @@ def collect_bodies(pcap, enc, collect=None):
 
     seen, bodies = set(), []
     for row in rows:
-        ip4, ip6, hexline = split_row(row, 3)
+        dst4, dst6, src4, src6, hexline = split_row(row, 5)
         try:
             raw = binascii.unhexlify(hexline.strip().replace(':', ''))
         except binascii.Error:
@@ -1572,8 +1578,8 @@ def collect_bodies(pcap, enc, collect=None):
         if fingerprint in seen:
             continue
         seen.add(fingerprint)
-        bodies.append((first_addr(ip4, ip6), raw))
-    bodies.sort(key=lambda pair: body_rank(pair[1].decode('utf-8', 'replace')))
+        bodies.append((first_addr(dst4, dst6), first_addr(src4, src6), raw))
+    bodies.sort(key=lambda row: body_rank(row[2].decode('utf-8', 'replace')))
     return bodies, fragmented
 
 
@@ -1734,7 +1740,7 @@ def decrypt_and_summarize(out_dir, target, target_is_recorded=False, stamp=None)
     http1, http2 = http_exchanges(pcap, enc, target_ips, collect)
 
     placed_bodies, fragmented = collect_bodies(pcap, enc, collect)
-    bodies = [raw.decode('utf-8', 'replace') for _, raw in placed_bodies]
+    bodies = [raw.decode('utf-8', 'replace') for _, _, raw in placed_bodies]
 
     stamp = run_stamp(out_dir, stamp)
     bodies_name = f'decrypted_bodies_{stamp}.txt'

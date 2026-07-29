@@ -510,6 +510,41 @@ class TrafficView(unittest.TestCase):
         self.assertFalse(server.traffic_view('')['ok'])
 
 
+class BothHalvesOfTheConversation(unittest.TestCase):
+    """Opening a call site showed what the app sent and nothing of what came
+    back, because bodies were filtered by destination only. For a server that
+    hands work to an app, the answer is the half worth reading."""
+
+    def view(self, tmp, bodies):
+        sockstack = server.sockstack
+        for name in ('traffic.pcap', 'decrypted.pcapng'):
+            open(os.path.join(tmp, name), 'wb').close()
+        with open(os.path.join(tmp, 'socket_trace.json'), 'w') as out:
+            json.dump([], out)
+        real_bodies = sockstack.collect_bodies
+        real_http = sockstack.http_exchanges
+        sockstack.collect_bodies = lambda *a, **k: (bodies, False)
+        sockstack.http_exchanges = lambda *a, **k: ({}, {})
+        try:
+            return server.traffic_view(tmp, '203.0.113.9:443')
+        finally:
+            sockstack.collect_bodies = real_bodies
+            sockstack.http_exchanges = real_http
+
+    def test_the_reply_is_shown_and_named_as_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = self.view(tmp, [('10.0.2.15', '203.0.113.9', b'{"task":1}'),
+                                  ('203.0.113.9', '10.0.2.15', b'{"id":7}')])
+            ways = {b['direction'] for b in got['bodies']}
+            self.assertEqual(ways, {'sent', 'received'})
+            self.assertEqual(len(got['bodies']), 2)
+
+    def test_a_body_belonging_to_neither_end_stays_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = self.view(tmp, [('198.51.100.1', '198.51.100.2', b'elsewhere')])
+            self.assertEqual(got['bodies'], [])
+
+
 class AClosedTabIsNotACrash(unittest.TestCase):
     """The page polls the device screen. A screenshot still being written when
     the browser abandons the request raises BrokenPipeError, which is normal and
