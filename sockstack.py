@@ -997,14 +997,15 @@ class FtraceSocketEvents:
         """
         if not event:
             return False
-        # Second rail under the kernel's own filter. `start()` refuses to run
-        # without pids, but the filter is rewritten from a background thread as
-        # the app's processes come and go, and a window where the kernel is
-        # broader than we believe must not become a destination attributed to
-        # the target. An event from a pid we are not tracking is dropped, not
-        # counted as something the tracer missed.
-        if self.pids and event.get('pid') not in self.pids:
-            return False
+        # Deliberately no second filter on `event['pid']` here. It reads like a
+        # free safety net over the kernel's own `set_event_pid`, and it is not:
+        # trace_pipe records the *thread* id, while the pids we track are process
+        # ids. An Android app does its networking on worker threads, so such a
+        # check discards every event that matters and leaves a source reporting
+        # a clean, confident zero. Measured on the emulator: 13 events before,
+        # 0 after, against an app that was demonstrably connecting out.
+        # Scoping belongs to the kernel filter, and `start()` refuses to run
+        # without one.
         key = (event['ip'], event['port'], event['proto'])
         with self._lock:
             if event.get('kind') == 'dial':

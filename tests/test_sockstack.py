@@ -976,15 +976,13 @@ class FtraceScoping(unittest.TestCase):
         return {'ip': '198.51.100.7', 'port': 443, 'proto': 'tcp',
                 'kind': 'dial', 'established': False, 'pid': pid, 'comm': 'x'}
 
-    def test_an_event_from_an_untracked_pid_is_dropped(self):
+    def test_a_worker_threads_event_is_not_thrown_away(self):
+        """trace_pipe records the thread id; the pids we track are process ids,
+        and an app connects out from worker threads. A ledger that drops events
+        whose id is not in that list reports a confident, wrong zero — measured
+        on the device as 13 events becoming 0."""
         src = self.source([4242])
-        self.assertFalse(src.note(self.dial(9999)))
-        self.assertEqual(src.artifact()['destinations_confirmed'], 0)
-        self.assertNotIn(('198.51.100.7', 443, 'tcp'), src._dialled)
-
-    def test_an_event_from_a_tracked_pid_still_counts(self):
-        src = self.source([4242])
-        self.assertTrue(src.note(self.dial(4242)))
+        self.assertTrue(src.note(self.dial(4271)))
         self.assertIn(('198.51.100.7', 443, 'tcp'), src._dialled)
 
     def test_a_stream_that_died_is_not_reported_as_an_empty_one(self):

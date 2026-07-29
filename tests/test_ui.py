@@ -7,6 +7,7 @@ the wrong device, the wrong package, or a tap in the wrong place.
 
     python3 -m unittest discover -s tests -v
 """
+import inspect
 import os
 import sys
 import unittest
@@ -507,6 +508,60 @@ class TrafficView(unittest.TestCase):
     def test_a_missing_directory_is_not_a_crash(self):
         self.assertFalse(server.traffic_view('/nonexistent/dir')['ok'])
         self.assertFalse(server.traffic_view('')['ok'])
+
+
+class EventStreamOnlyIsItsOwnAnswer(unittest.TestCase):
+    """A destination only the kernel event stream saw is not the same finding as
+    one the poller also saw. Folding them together throws away the measurement
+    that justifies reading events at all."""
+
+    def cards(self, tmp, peers):
+        with open(os.path.join(tmp, 'uid_sockets.json'), 'w') as out:
+            json.dump({'peers': peers}, out)
+        with open(os.path.join(tmp, 'socket_trace.json'), 'w') as out:
+            json.dump([], out)
+        return {c['peer']: c for c in server.attribution_cards(tmp)['cards']}
+
+    def test_a_peer_seen_only_by_the_event_stream_says_so(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cards = self.cards(tmp, [{'ip': '198.51.100.9', 'port': 443,
+                                      'sources': ['ftrace']}])
+            card = cards['198.51.100.9:443']
+            self.assertEqual(card['kind'], 'event-stream-only')
+            self.assertIn('2-second poll missed it', card['label'])
+
+    def test_a_peer_the_poller_also_saw_stays_kernel_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cards = self.cards(tmp, [{'ip': '198.51.100.9', 'port': 443,
+                                      'sources': ['proc-net', 'ftrace']}])
+            self.assertEqual(cards['198.51.100.9:443']['kind'], 'kernel-only')
+
+    def test_a_run_without_the_event_stream_is_unaffected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cards = self.cards(tmp, [{'ip': '198.51.100.9', 'port': 443}])
+            self.assertEqual(cards['198.51.100.9:443']['kind'], 'kernel-only')
+
+
+class PanelCanAskForTheEventStream(unittest.TestCase):
+    """The kernel event stream was reachable only from the command line, while
+    the panel is what most people will run. A flag nobody can switch on is a
+    feature only the README has."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(INDEX, encoding='utf-8') as fh:
+            cls.page = fh.read()
+
+    def test_the_page_offers_the_toggle(self):
+        self.assertIn('id="ftrace"', self.page)
+
+    def test_the_toggle_is_sent_with_the_run(self):
+        self.assertIn("ftrace: $('ftrace').checked", self.page)
+
+    def test_the_server_turns_it_into_the_flag(self):
+        source = inspect.getsource(server.Handler._run)
+        self.assertIn("data.get('ftrace')", source)
+        self.assertIn("'--ftrace'", source)
 
 
 class TrafficIsWhereTheCallSiteIs(unittest.TestCase):

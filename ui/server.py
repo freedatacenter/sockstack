@@ -263,6 +263,11 @@ PEER_KINDS = {
     'attribution-unavailable': ('the Java bridge was not working here', 'unknown'),
     'unknown': ('no reason recorded — treat as unexamined', 'unknown'),
     'kernel-only': ('the kernel saw it; the tracer has no record', 'unknown'),
+    # Worth its own label rather than folding into kernel-only: this address was
+    # too short-lived for a 2-second sample to catch, and saying so is the whole
+    # argument for reading kernel events instead of polling kernel state.
+    'event-stream-only': ('only the kernel event stream saw it — the tracer has '
+                          'no record and the 2-second poll missed it', 'unknown'),
 }
 
 
@@ -299,7 +304,11 @@ def attribution_cards(out_dir):
     for entry in uid_blob.get('peers', []):
         peer = sockstack.format_peer(entry.get('ip'), entry.get('port'))
         if peer not in seen and entry.get('ip'):
-            cards.append({'peer': peer, 'kind': 'kernel-only', 'sites': [],
+            sources = entry.get('sources') or []
+            cards.append({'peer': peer, 'sites': [],
+                          'kind': ('event-stream-only' if sources == ['ftrace']
+                                   else 'kernel-only'),
+                          'sources': sources,
                           'note': '' if entry.get('established', True)
                                   else 'attempted, never established'})
 
@@ -817,6 +826,8 @@ class Handler(BaseHTTPRequestHandler):
             command.append('--attach')
         if data.get('anti_root'):
             command.append('--anti-root')
+        if data.get('ftrace'):
+            command.append('--ftrace')
         if data.get('postprocess_only'):
             command.append('--postprocess-only')
         ok, message = RUN.start(command, output, ' '.join(command))

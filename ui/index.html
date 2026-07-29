@@ -313,6 +313,7 @@
            data-i18n-title="title.duration">
     <label class="toggle"><input type="checkbox" id="attach"><i></i>attach</label>
     <label class="toggle"><input type="checkbox" id="antiRoot"><i></i>anti-root</label>
+    <label class="toggle" data-i18n-title="run.ftraceWhy"><input type="checkbox" id="ftrace"><i></i>ftrace</label>
     <div class="grow"></div>
     <span class="pill lang" data-lang-switch>EN · RU</span>
     <span class="pill" id="statusPill"><span class="dot"
@@ -484,6 +485,8 @@ const STRINGS = {
     'runs.bridgeFailed': 'java bridge failed',
     'dev.none': 'Nothing attached. Check the cable, or ' +
                 '<span class="mono">adb start-server</span>.',
+    'run.ftraceWhy': 'also read socket events from the kernel — catches TCP ' +
+                     'connections too short-lived for the 2-second poll (needs root)',
     'dev.hint.unauth': 'accept the authorisation prompt on the device',
     'dev.hint.offline.net': 'the path to this device died — check that the ssh ' +
                             'tunnel is still up, then reconnect',
@@ -513,6 +516,9 @@ const STRINGS = {
     'b.site': 'call site(s)',
     'cross.ok': 'Kernel cross-check on uid $1: ran, $2 poll(s).',
     'cross.bad': 'Kernel cross-check: $1 — its silence is not evidence.',
+    'stream.ok': 'Kernel event stream: $1 connection event(s) — ' +
+                 '$2 destination(s) the 2-second poll never saw. TCP only.',
+    'stream.bad': 'Kernel event stream: $1 — short-lived connections may be missing.',
   },
   ru: {
     'tagline': 'какой код это отправил?',
@@ -617,6 +623,8 @@ const STRINGS = {
     'runs.bridgeFailed': 'java-мост не поднялся',
     'dev.none': 'Ничего не подключено. Проверьте кабель или ' +
                 '<span class="mono">adb start-server</span>.',
+    'run.ftraceWhy': 'дополнительно читать события сокетов из ядра — ловит ' +
+                     'TCP-соединения короче двухсекундного опроса (нужен root)',
     'dev.hint.unauth': 'подтвердите авторизацию на самом устройстве',
     'dev.hint.offline.net': 'связь с устройством пропала — проверьте, жив ли ' +
                             'ssh-туннель, и переподключитесь',
@@ -646,6 +654,9 @@ const STRINGS = {
     'b.site': 'мест вызова',
     'cross.ok': 'Сверка с ядром по uid $1: выполнена, опросов — $2.',
     'cross.bad': 'Сверка с ядром: $1 — её молчание доказательством не является.',
+    'stream.ok': 'Поток событий ядра: $1 событий соединения — ' +
+                 '$2 адресов, которых двухсекундный опрос не увидел. Только TCP.',
+    'stream.bad': 'Поток событий ядра: $1 — короткие соединения могли не попасть.',
   },
 };
 const browserRussian = (navigator.language || '').toLowerCase().startsWith('ru');
@@ -870,7 +881,20 @@ async function loadFindings() {
       ? `<div class="empty" style="margin-bottom:12px;color:var(--warn)">` +
         `${t('cross.bad', esc(cross.status))}</div>`
       : '';
-  const rendered = crossLine + ((data.cards || []).map(card => {
+  // The event stream's whole argument is a comparison, and the comparison lives
+  // nowhere in the cards: a destination it caught that the poller missed is
+  // usually one the tracer recorded too, so it shows up as an ordinary peer.
+  // Without this line the measurement exists only in the summary file.
+  const stream = cross.ftrace || {};
+  const streamLine = ['ok', 'no-events'].includes(stream.status)
+    ? `<div class="empty" style="margin-bottom:12px">` +
+      `${t('stream.ok', stream.events_parsed || 0,
+            (cross.missed_by_polling || []).length)}</div>`
+    : stream.status && stream.status !== 'not-run'
+      ? `<div class="empty" style="margin-bottom:12px;color:var(--warn)">` +
+        `${t('stream.bad', esc(stream.status))}</div>`
+      : '';
+  const rendered = crossLine + streamLine + ((data.cards || []).map(card => {
     const frames = card.sites.map(s => {
       const app = (s.app || []).map(f =>
         `<div>${esc(f).replace(/(\(.*\))$/, '<span class="src">$1</span>')}</div>`).join('');
@@ -1028,7 +1052,7 @@ $('start').onclick = async () => {
   const data = await post('/api/run', {
     device: dev(), package: $('package').value, output: $('output').value,
     duration: $('duration').value, attach: $('attach').checked,
-    anti_root: $('antiRoot').checked});
+    anti_root: $('antiRoot').checked, ftrace: $('ftrace').checked});
   // Next to the button that was pressed. This message used to go to the status
   // line at the foot of the other column, which made a refusal look like a
   // button that does nothing.
