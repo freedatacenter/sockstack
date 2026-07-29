@@ -32,12 +32,17 @@ pip install -r requirements.txt          # friTap 2.x, which pins Frida to 17.x
 # macOS:         brew install wireshark android-platform-tools
 ```
 
+Python 3.9 or newer. The test suite is run on 3.12 (Linux) and 3.14 (macOS);
+nothing here depends on a module removed or added between them.
+
 `tshark` and `editcap` come from Wireshark and are used only for the decryption
 and summary steps. Without them a run still captures; it just stops before
 producing readable output.
 
 Node is **not** required. The Frida agent ships pre-built in the tree; Node is
-needed only if you want to rebuild it.
+needed only if you want to rebuild it. One test — the one that rebuilds the
+agent and compares it byte-for-byte with the shipped bundle — skips without it.
+A skip there means that check did not run, not that the bundle is stale.
 
 ---
 
