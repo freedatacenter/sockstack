@@ -510,6 +510,36 @@ class TrafficView(unittest.TestCase):
         self.assertFalse(server.traffic_view('')['ok'])
 
 
+class AClosedTabIsNotACrash(unittest.TestCase):
+    """The page polls the device screen. A screenshot still being written when
+    the browser abandons the request raises BrokenPipeError, which is normal and
+    unactionable — but printed as a traceback it reads as the tool falling over,
+    and it arrives once per poll."""
+
+    def handler(self, error):
+        h = server.Handler.__new__(server.Handler)
+        h.path = '/api/screen'
+        h.send_response = lambda *a, **k: None
+        h.send_header = lambda *a, **k: None
+        h.end_headers = lambda *a, **k: None
+
+        class Pipe:
+            def write(self, _):
+                raise error
+        h.wfile = Pipe()
+        return h
+
+    def test_a_broken_pipe_is_swallowed(self):
+        self.handler(BrokenPipeError(32, 'Broken pipe'))._send(200, b'png')
+
+    def test_a_reset_connection_is_swallowed(self):
+        self.handler(ConnectionResetError(54, 'Reset'))._send(200, {'ok': True})
+
+    def test_a_real_write_failure_is_not_hidden(self):
+        with self.assertRaises(ValueError):
+            self.handler(ValueError('something else'))._send(200, {'ok': True})
+
+
 class EventStreamOnlyIsItsOwnAnswer(unittest.TestCase):
     """A destination only the kernel event stream saw is not the same finding as
     one the poller also saw. Folding them together throws away the measurement

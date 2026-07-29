@@ -452,3 +452,18 @@ activity is what you think it is; it is frequently *not* `MainActivity`:
 ```bash
 adb shell cmd package resolve-activity --brief <pkg>
 ```
+
+## BrokenPipeError from the panel is a closed tab, not a crash
+
+The page polls the device screen, so there is nearly always a screenshot being
+written when the browser abandons the request in favour of the next one. The
+socket is gone by the time the PNG is sent, and Python's `ThreadingHTTPServer`
+prints the resulting `BrokenPipeError` as a two-part traceback — once per poll,
+which reads as though the tool is falling over on every frame.
+
+It is not a failure and there is nothing to act on, so `_send` now swallows
+`BrokenPipeError` and `ConnectionResetError` and leaves every other write error
+alone. Worth knowing because of the second-order effect: when the aborted send
+*was* the 500 response, the traceback you see is the failure to report an error
+rather than the error itself. That is why the handler also prints the original
+exception to stderr — it is the only copy that survives a client which left.

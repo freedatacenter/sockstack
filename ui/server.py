@@ -578,12 +578,19 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(body).encode()
         elif isinstance(body, str):
             body = body.encode()
-        self.send_response(code)
-        self.send_header('Content-Type', content_type)
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'no-store')
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The page polls; a reload or a closed tab aborts requests in flight
+            # and there is nobody left to answer. Normal, and nothing the reader
+            # can act on — but printed as a traceback it reads as a crash, and
+            # worse, it buries the real exception when this send was the 500.
+            pass
 
     def _body(self):
         length = int(self.headers.get('Content-Length') or 0)
@@ -633,6 +640,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self._report(query.get('dir') or ''))
             return self._send(404, {'error': 'no such endpoint'})
         except Exception as exc:                            # noqa: BLE001
+            # Say it here as well as in the response: if the client is the one
+            # that went away, the 500 goes nowhere and the error would vanish
+            # with it. This line is the only copy that survives that case.
+            print(f'[!] {self.path}: {type(exc).__name__}: {exc}', file=sys.stderr)
             return self._send(500, {'error': f'{type(exc).__name__}: {exc}'})
 
     def do_POST(self):
@@ -690,6 +701,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {'ok': ok, 'message': message})
             return self._send(404, {'error': 'no such endpoint'})
         except Exception as exc:                            # noqa: BLE001
+            # Say it here as well as in the response: if the client is the one
+            # that went away, the 500 goes nowhere and the error would vanish
+            # with it. This line is the only copy that survives that case.
+            print(f'[!] {self.path}: {type(exc).__name__}: {exc}', file=sys.stderr)
             return self._send(500, {'error': f'{type(exc).__name__}: {exc}'})
 
     # -- endpoint bodies ---------------------------------------------------
