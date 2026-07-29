@@ -311,8 +311,8 @@
     <input class="chip" id="output" placeholder="./run" data-i18n-title="title.output">
     <input class="chip" id="duration" type="number" value="200" style="width:88px"
            data-i18n-title="title.duration">
-    <label class="toggle"><input type="checkbox" id="attach"><i></i>attach</label>
-    <label class="toggle"><input type="checkbox" id="antiRoot"><i></i>anti-root</label>
+    <label class="toggle" data-i18n-title="run.attachWhy"><input type="checkbox" id="attach"><i></i>attach</label>
+    <label class="toggle" data-i18n-title="run.antiRootWhy"><input type="checkbox" id="antiRoot"><i></i>anti-root</label>
     <label class="toggle" data-i18n-title="run.ftraceWhy"><input type="checkbox" id="ftrace"><i></i>ftrace</label>
     <div class="grow"></div>
     <span class="pill lang" data-lang-switch>EN · RU</span>
@@ -434,6 +434,12 @@ const STRINGS = {
     'traffic.textBody': 'text',
     'traffic.runs': 'runs',
     'traffic.hex': 'hex',
+    'traffic.unparsed': 'This address is in the capture, but nothing dissects ' +
+                        'what it speaks — not HTTP, not TLS. The bytes below ' +
+                        'are the raw TCP segments; the protocol is yours to read.',
+    'traffic.rawStream': 'Raw TCP segments, shown in capture order and not ' +
+                         'reassembled: a segment may begin mid-message.',
+    'traffic.rawTag': 'raw TCP',
     'traffic.sent': 'sent by the app',
     'traffic.received': 'answer from the server',
     'traffic.strings': 'strings',
@@ -487,6 +493,12 @@ const STRINGS = {
     'runs.bridgeFailed': 'java bridge failed',
     'dev.none': 'Nothing attached. Check the cable, or ' +
                 '<span class="mono">adb start-server</span>.',
+    'run.attachWhy': 'attach to the app already running instead of starting it ' +
+                     'under the tracer — whatever it did before you attached is ' +
+                     'not recorded, and the report says so',
+    'run.antiRootWhy': 'hide the usual signs of root and instrumentation from ' +
+                       'the app — for samples that refuse to run on a rooted ' +
+                       'device. Costs nothing when it is not needed',
     'run.ftraceWhy': 'also read socket events from the kernel — catches TCP ' +
                      'connections too short-lived for the 2-second poll (needs root)',
     'dev.hint.unauth': 'accept the authorisation prompt on the device',
@@ -579,6 +591,12 @@ const STRINGS = {
     'traffic.textBody': 'текст',
     'traffic.runs': 'фрагм.',
     'traffic.hex': 'hex',
+    'traffic.unparsed': 'Этот адрес в захвате есть, но его протокол ничем не ' +
+                        'разбирается — ни HTTP, ни TLS. Ниже сырые TCP-сегменты; ' +
+                        'протокол читать вам.',
+    'traffic.rawStream': 'Сырые TCP-сегменты в порядке захвата, без пересборки: ' +
+                         'сегмент может начинаться с середины сообщения.',
+    'traffic.rawTag': 'сырой TCP',
     'traffic.sent': 'отправило приложение',
     'traffic.received': 'ответ сервера',
     'traffic.strings': 'строки',
@@ -632,6 +650,12 @@ const STRINGS = {
     'runs.bridgeFailed': 'java-мост не поднялся',
     'dev.none': 'Ничего не подключено. Проверьте кабель или ' +
                 '<span class="mono">adb start-server</span>.',
+    'run.attachWhy': 'подключиться к уже запущенному приложению вместо старта ' +
+                     'под трассировкой — всё, что оно сделало до подключения, ' +
+                     'не записано, и отчёт об этом скажет',
+    'run.antiRootWhy': 'прятать от приложения обычные признаки root и ' +
+                       'инструментации — для образцов, которые отказываются ' +
+                       'работать на рутованном устройстве. Когда не нужно — ничего не стоит',
     'run.ftraceWhy': 'дополнительно читать события сокетов из ядра — ловит ' +
                      'TCP-соединения короче двухсекундного опроса (нужен root)',
     'dev.hint.unauth': 'подтвердите авторизацию на самом устройстве',
@@ -993,11 +1017,13 @@ async function loadTraffic(peer, box) {
                           : t('traffic.textBody');
     const hex = b.hex ? `<span class="hexlink" data-body="${i}">${t('traffic.hex')}</span>`
                       : '';
+    const rawTag = b.raw
+      ? `<span class="badge unknown">${t('traffic.rawTag')}</span> ` : '';
     const way = b.direction
       ? `<span class="badge ${b.direction === 'sent' ? 'good' : 'unknown'}">` +
         `${t(b.direction === 'sent' ? 'traffic.sent' : 'traffic.received')}</span> `
       : '';
-    return `<div class="body-head">${way}${t('traffic.body')} ${i + 1} · ${b.bytes}
+    return `<div class="body-head">${rawTag}${way}${t('traffic.body')} ${i + 1} · ${b.bytes}
        ${t('traffic.bytes')} · ${kind} · ${esc(b.ip)} ${hex}</div>
      <div class="body-text" data-text="${i}">${esc(b.text) ||
        `<span style="color:var(--faint)">${t('traffic.noStrings')}</span>`}</div>
@@ -1007,6 +1033,8 @@ async function loadTraffic(peer, box) {
   // "We could not read it" must never render as "it sent nothing".
   if (data.state === 'encrypted') notes.push(t('traffic.encrypted'));
   if (data.state === 'absent') notes.push(t('traffic.absent'));
+  if (data.state === 'unparsed') notes.push(t('traffic.unparsed'));
+  if (data.raw_stream) notes.push(t('traffic.rawStream'));
   if (data.truncated) notes.push(t('traffic.truncated'));
   if (data.fragmented) notes.push(t('traffic.fragmented'));
   box.innerHTML = caveat + requests +

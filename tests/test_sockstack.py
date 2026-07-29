@@ -961,6 +961,48 @@ class FtraceAgainstRealKernelOutput(unittest.TestCase):
         self.assertIn('sport=0', FTRACE_REAL.splitlines()[0])
 
 
+class RawSegmentsForProtocolsNobodyDissects(unittest.TestCase):
+    """A C2 on a port no dissector claims falls through every HTTP extraction
+    the tool has. The bytes are in the capture; showing an empty request list
+    instead is indistinguishable from an app that sent nothing."""
+
+    def test_segments_come_back_with_both_endpoints(self):
+        rows = ['198.51.100.4\t\t10.0.2.15\t\t' + b'PING'.hex(),
+                '10.0.2.15\t\t198.51.100.4\t\t' + b'PONG'.hex()]
+
+        def collect(_path, flt, *fields):
+            self.assertIn('tcp.len > 0', flt)
+            self.assertIn('!tls', flt)      # TLS has its own path; do not double up
+            self.assertIn('tcp.payload', fields)
+            return rows
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pcap = os.path.join(tmp, 'traffic.pcap')
+            open(pcap, 'wb').close()
+            got = sockstack.tcp_payloads(pcap, '198.51.100.4', collect)
+        self.assertEqual([raw for _, _, raw in got], [b'PING', b'PONG'])
+        self.assertEqual(got[0][0], '198.51.100.4')
+        self.assertEqual(got[1][1], '198.51.100.4')
+
+    def test_a_missing_capture_is_not_an_error(self):
+        self.assertEqual(sockstack.tcp_payloads('/nope.pcap', '198.51.100.4'), [])
+        self.assertEqual(sockstack.tcp_payloads('', '198.51.100.4'), [])
+
+    def test_without_an_address_nothing_is_dumped(self):
+        """No peer means no filter, and no filter would hand back the whole
+        device's traffic as though it were this app's."""
+        self.assertEqual(sockstack.tcp_payloads('x.pcap', ''), [])
+
+    def test_the_dump_is_capped(self):
+        rows = ['198.51.100.4\t\t10.0.2.15\t\t' + b'x'.hex()] * 500
+        with tempfile.TemporaryDirectory() as tmp:
+            pcap = os.path.join(tmp, 'traffic.pcap')
+            open(pcap, 'wb').close()
+            got = sockstack.tcp_payloads(pcap, '198.51.100.4',
+                                         lambda *a, **k: rows, limit=40)
+        self.assertEqual(len(got), 40)
+
+
 class BodiesCarryBothEnds(unittest.TestCase):
     """A reply travels towards the device, so a body keyed only by destination
     can never be an answer. Filtering on that alone left a GET with nothing

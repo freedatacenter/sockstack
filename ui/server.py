@@ -398,6 +398,18 @@ def stream_state(pcap, enc, ip, saw_http):
             return ''
         if rows:
             return 'encrypted'
+    # Neither HTTP nor TLS, but the address is not a stranger to this capture.
+    # Reporting that as "nothing here" would be an assertion of absence made in
+    # the presence of the evidence — the exact mistake this tool exists to avoid.
+    for path in (pcap, enc):
+        if not path or not os.path.exists(path):
+            continue
+        rows, err = sockstack.tshark_fields(path, f'{family} == {ip} && tcp.len > 0',
+                                            'frame.number')
+        if err:
+            return ''
+        if rows:
+            return 'unparsed'
     return 'absent'
 
 
@@ -451,17 +463,30 @@ def traffic_view(out_dir, peer=''):
         # showed a GET with nothing under it and hid the reply that made the
         # request worth looking at.
         placed = [row for row in placed if wanted in (row[0], row[1])]
+    # No HTTP for this peer does not mean nothing was sent to it. A protocol
+    # nobody dissects leaves bytes in the capture that every extraction above
+    # steps over; show them, labelled as the raw segments they are.
+    raw_stream = False
+    if wanted and not placed:
+        placed = sockstack.tcp_payloads(pcap, wanted)
+        raw_stream = bool(placed)
+
     truncated = len(placed) > MAX_BODIES
     bodies = []
     for dst, src, raw in placed[:MAX_BODIES]:
         body = render_body(raw)
         truncated = truncated or body.pop('clipped', False)
-        bodies.append(dict(body, ip=dst if dst else src,
+        bodies.append(dict(body, ip=dst if dst else src, raw=raw_stream,
                            direction='sent' if wanted and dst == wanted
                                      else 'received' if wanted else ''))
     return {'ok': True, 'error': '', 'peer': peer, 'requests': requests,
             'bodies': bodies, 'truncated': truncated, 'fragmented': fragmented,
-            'state': stream_state(pcap, enc, wanted, bool(requests or bodies)),
+            'raw_stream': raw_stream,
+            # Raw segments are bytes we could show, not protocol we could read.
+            # Counting them as "decrypted" would promote a hexdump to a parsed
+            # exchange and quietly overstate what the tool understood.
+            'state': stream_state(pcap, enc, wanted,
+                                  bool(requests) or bool(bodies) and not raw_stream),
             # Not decoration: an unmarked request is one nobody tied to the
             # target, and the capture is device-wide.
             'attributed': sum(1 for r in requests if r['target'])}

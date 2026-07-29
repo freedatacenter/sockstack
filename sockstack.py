@@ -1583,6 +1583,40 @@ def collect_bodies(pcap, enc, collect=None):
     return bodies, fragmented
 
 
+def tcp_payloads(pcap, ip, collect=None, limit=40):
+    """[(destination, source, raw_bytes)] for one peer, straight off the wire.
+
+    Everything else here extracts HTTP, because that is what most apps speak and
+    what tshark will hand over already reassembled. A C2 on port 3009 speaking
+    its own protocol falls through all of it: the bytes are in the capture, no
+    dissector claims them, and the panel had nothing to show — which it then
+    rendered as an empty request list, indistinguishable from an app that sent
+    nothing.
+
+    These are TCP segments, not messages. They are not reassembled and they may
+    start mid-token; the point is to make the bytes visible at all, and the
+    caller must not present them as parsed protocol.
+    """
+    if collect is None:
+        def collect(path, flt, *fields):
+            return tshark_fields(path, flt, *fields)[0]
+    if not ip or not pcap or not os.path.exists(pcap):
+        return []
+    family = 'ipv6.addr' if ':' in ip else 'ip.addr'
+    rows = collect(pcap, f'{family} == {ip} && tcp.len > 0 && !tls',
+                   'ip.dst', 'ipv6.dst', 'ip.src', 'ipv6.src', 'tcp.payload')
+    out = []
+    for row in rows[:limit]:
+        dst4, dst6, src4, src6, hexline = split_row(row, 5)
+        try:
+            raw = binascii.unhexlify(hexline.strip().replace(':', ''))
+        except binascii.Error:
+            continue
+        if raw:
+            out.append((first_addr(dst4, dst6), first_addr(src4, src6), raw))
+    return out
+
+
 def http_exchanges(pcap, enc, target_ips, collect=None):
     """{label: seen_going_to_the_target} for HTTP/1 and HTTP/2 requests.
 

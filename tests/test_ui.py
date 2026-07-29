@@ -575,6 +575,39 @@ class AClosedTabIsNotACrash(unittest.TestCase):
             self.handler(ValueError('something else'))._send(200, {'ok': True})
 
 
+class PresenceIsNeverReportedAsAbsence(unittest.TestCase):
+    """A peer speaking its own protocol on its own port is neither HTTP nor TLS,
+    and the panel used to answer "nothing for this address in the capture at
+    all" — an assertion of absence made with the evidence sitting right there."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(INDEX, encoding='utf-8') as fh:
+            cls.page = fh.read()
+
+    def test_the_state_has_a_name_for_traffic_nobody_dissects(self):
+        source = inspect.getsource(server.stream_state)
+        self.assertIn("'unparsed'", source)
+
+    def test_the_page_says_so_instead_of_claiming_emptiness(self):
+        self.assertIn("data.state === 'unparsed'", self.page)
+        for table in ('en', 'ru'):
+            body = self.page.split(f'  {table}: {{', 1)[1].split('\n  },', 1)[0]
+            self.assertIn("'traffic.unparsed'", body)
+
+    def test_raw_segments_are_not_counted_as_something_we_read(self):
+        """They are bytes we could show, not protocol we could parse. Feeding
+        them to the 'did we read it' question would report a hexdump as a
+        decrypted exchange."""
+        source = inspect.getsource(server.Handler) + inspect.getsource(
+            server.traffic_view)
+        self.assertIn('bool(bodies) and not raw_stream', source)
+
+    def test_a_raw_body_is_labelled_as_one(self):
+        self.assertIn("traffic.rawTag", self.page)
+        self.assertIn('b.raw', self.page)
+
+
 class TheRunPanelDoesNotContradictItself(unittest.TestCase):
     """Three faults that met on one screen: a refusal that outlived the run it
     described, a log cleared before anyone knew the run had started, and results
@@ -652,6 +685,14 @@ class PanelCanAskForTheEventStream(unittest.TestCase):
 
     def test_the_page_offers_the_toggle(self):
         self.assertIn('id="ftrace"', self.page)
+
+    def test_every_run_toggle_explains_itself(self):
+        """One switch with a tooltip and two without reads as an oversight, and
+        the two without are the ones whose effect on the result is hardest to
+        guess from three words on a label."""
+        for toggle in ('attach', 'antiRoot', 'ftrace'):
+            block = self.page.split(f'id="{toggle}"', 1)[0].rsplit('<label', 1)[1]
+            self.assertIn('data-i18n-title', block, f'{toggle} has no tooltip')
 
     def test_the_toggle_is_sent_with_the_run(self):
         self.assertIn("ftrace: $('ftrace').checked", self.page)
