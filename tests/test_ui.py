@@ -575,6 +575,35 @@ class AClosedTabIsNotACrash(unittest.TestCase):
             self.handler(ValueError('something else'))._send(200, {'ok': True})
 
 
+class TextInAnyAlphabetIsStillText(unittest.TestCase):
+    """A JSON configuration written in Russian is more than half multi-byte
+    UTF-8. Judged byte by byte against an ASCII table it looks unprintable, and
+    a readable document arrived labelled binary and chopped into `strings`-style
+    fragments with the Cyrillic dropped."""
+
+    def test_russian_json_is_text(self):
+        raw = '{"комментарий": "обновление доступно", "android": "2.0.37"}'.encode()
+        body = server.render_body(raw)
+        self.assertFalse(body['binary'])
+        self.assertIn('обновление доступно', body['text'])
+
+    def test_plain_ascii_json_is_still_text(self):
+        body = server.render_body(b'{"android": "2.0.37"}')
+        self.assertFalse(body['binary'])
+        self.assertEqual(body['text'], '{"android": "2.0.37"}')
+
+    def test_protobuf_is_still_binary(self):
+        raw = bytes([0x0a, 0x03]) + b'app' + bytes([0x12, 0x01, 0x07, 0x00, 0x03])
+        self.assertTrue(server.render_body(raw)['binary'])
+
+    def test_bytes_that_are_not_utf8_are_binary(self):
+        self.assertTrue(server.render_body(b'\xff\xfe\x00\x01binary')['binary'])
+
+    def test_the_judgement_is_about_characters_not_bytes(self):
+        self.assertIsNone(server.as_text(b'\x00\x01\x02\x03'))
+        self.assertIsNotNone(server.as_text('привет'.encode()))
+
+
 class PresenceIsNeverReportedAsAbsence(unittest.TestCase):
     """A peer speaking its own protocol on its own port is neither HTTP nor TLS,
     and the panel used to answer "nothing for this address in the capture at

@@ -1008,7 +1008,7 @@ async function loadTraffic(peer, box) {
   const caveat = `<p class="caveat">${t('traffic.caveat', esc(peer))}</p>`;
   const requests = (data.requests || []).map(r =>
     `<div class="req ${r.target ? '' : 'other'}">
-       <span class="badge ${r.target ? 'good' : 'unknown'}">${r.proto}</span>${esc(r.label)}
+       <span class="badge ${r.target ? 'good' : 'unknown'}">${r.proto}</span> ${esc(r.label)}
      </div>`).join('') || `<div class="empty">${t('traffic.noRequests')}</div>`;
   const bodies = (data.bodies || []).map((b, i) => {
     // A binary body is shown as its printable runs — the bytes are one click

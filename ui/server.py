@@ -338,6 +338,27 @@ STRING_RUN = re.compile(rb'[\x20-\x7e]{4,}')
 HEX_BYTES = 1024
 
 
+def as_text(raw):
+    """The body as text, or None if it is not text.
+
+    Judged on characters, not bytes. The byte-level test that came before this
+    counted anything above 0x7e as unprintable, which is most of a JSON document
+    written in Russian — so a readable configuration arrived on screen labelled
+    binary and chopped into twenty-two `strings`-style fragments, with the
+    commas and the Cyrillic dropped on the floor. Whether a body is text is a
+    question about its alphabet, and UTF-8 already answers it: bytes that decode
+    cleanly and read as printable characters are text, in any language.
+    """
+    try:
+        text = raw.decode('utf-8')
+    except (UnicodeDecodeError, AttributeError):
+        return None
+    if not text:
+        return None
+    readable = sum(1 for ch in text if ch.isprintable() or ch in '\t\n\r')
+    return text if readable / len(text) >= 0.85 else None
+
+
 def render_body(raw):
     """One body, shown the way its contents deserve.
 
@@ -346,12 +367,12 @@ def render_body(raw):
     a body that is mostly unprintable is offered as its printable runs, the way
     `strings` would, with the bytes themselves a click away. Text is still text.
     """
-    printable = sum(1 for byte in raw if byte in PRINTABLE)
-    binary = bool(raw) and printable / len(raw) < 0.85
+    text = as_text(raw)
+    binary = bool(raw) and text is None
     body = {'bytes': len(raw), 'binary': binary, 'hex': '', 'text': ''}
     if not binary:
-        body['text'] = raw.decode('utf-8', 'replace')[:BODY_CHARS]
-        body['clipped'] = len(raw) > BODY_CHARS
+        body['text'] = (text or '')[:BODY_CHARS]
+        body['clipped'] = len(text or '') > BODY_CHARS
         return body
     runs = [run.decode('ascii') for run in STRING_RUN.findall(raw)]
     body['text'] = '\n'.join(runs)[:BODY_CHARS]
@@ -476,9 +497,11 @@ def traffic_view(out_dir, peer=''):
     for dst, src, raw in placed[:MAX_BODIES]:
         body = render_body(raw)
         truncated = truncated or body.pop('clipped', False)
-        bodies.append(dict(body, ip=dst if dst else src, raw=raw_stream,
-                           direction='sent' if wanted and dst == wanted
-                                     else 'received' if wanted else ''))
+        way = 'sent' if wanted and dst == wanted else 'received' if wanted else ''
+        # Name the far end, always. Labelling a reply with the device's own
+        # address answers a question nobody asked and hides the one that matters.
+        bodies.append(dict(body, raw=raw_stream, direction=way,
+                           ip=(src if way == 'received' else dst) or src or dst))
     return {'ok': True, 'error': '', 'peer': peer, 'requests': requests,
             'bodies': bodies, 'truncated': truncated, 'fragmented': fragmented,
             'raw_stream': raw_stream,
