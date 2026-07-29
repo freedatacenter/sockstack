@@ -478,6 +478,25 @@ without `--yes`. Check the dry run before trusting it with a case directory:
 slimming a finished investigation removes the capture you would need to
 re-examine it, and that is a decision, not housekeeping.
 
+### The device collects samples too
+
+A stand ends up carrying every APK you ever looked at. That is worse than
+untidy: the capture is device-wide, so anything still installed and still
+running appears in later runs as traffic nobody can attribute — and a sample
+with a background service goes on talking to its C2 from your lab long after
+you stopped studying it.
+
+```bash
+./scripts/device_clean.py --device <serial>                        # list
+./scripts/device_clean.py --device <serial> --remove com.a --yes
+./scripts/device_clean.py --device <serial> --remove-all --keep com.b --yes
+```
+
+Only third-party packages are considered; system and vendor packages are not
+this script's business. `--keep` beats everything, including an explicit
+`--remove` of the same name — a protection that can be overridden by the next
+flag is decoration.
+
 ---
 
 ## When something goes wrong
