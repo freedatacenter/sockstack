@@ -95,8 +95,22 @@ if [ "$STATE" = "device" ]; then
   REL="$(adb -s "$SERIAL" shell getprop ro.build.version.release | tr -d '\r')"
   ok "Android $REL, $ABI"
 
-  adb -s "$SERIAL" root >/dev/null 2>&1
+  # Ask before elevating, and never elevate a device reached over the network.
+  # `adb root` restarts adbd, which on USB costs a reconnect the server handles
+  # by itself — but over TCP it drops the transport, and the device goes offline
+  # and stays there until someone runs `adb connect` again. A readiness check
+  # that knocks the device off the bus is worse than one that reports honestly
+  # that root is missing. sockstack itself only ever detects; this now matches.
   UID_NOW="$(adb -s "$SERIAL" shell id -u 2>/dev/null | tr -d '\r')"
+  case "$SERIAL" in
+    *:[0-9]*) NETWORK_DEVICE=1 ;;
+    *)        NETWORK_DEVICE=0 ;;
+  esac
+  if [ "$UID_NOW" != "0" ] && [ "$NETWORK_DEVICE" = "0" ]; then
+    adb -s "$SERIAL" root >/dev/null 2>&1
+    adb -s "$SERIAL" wait-for-device >/dev/null 2>&1
+    UID_NOW="$(adb -s "$SERIAL" shell id -u 2>/dev/null | tr -d '\r')"
+  fi
   if [ "$UID_NOW" = "0" ]; then
     ok "root shell available"
   elif [ "$(adb -s "$SERIAL" shell 'su -c id -u' 2>/dev/null | tr -d '\r')" = "0" ]; then
@@ -122,8 +136,15 @@ if [ "$STATE" = "device" ]; then
         "./setup-device.sh $SERIAL ./frida-server-<version>-android-<arch>"
   fi
 
-  if adb -s "$SERIAL" shell 'command -v tcpdump' >/dev/null 2>&1; then
-    ok "tcpdump on the device"
+  # The same three places, in the same order, that the runner searches. Looking
+  # only on PATH called a stock phone provisioned by our own setup-device.sh
+  # unready — it puts the binary in /data/local/tmp, which is on no PATH — and
+  # the advice printed then sent the operator to put it there a second time.
+  # Read the answer, do not read the exit status: `adb shell` has not always
+  # propagated one, and this script already learned that lesson on `pm list`.
+  TCPDUMP_AT="$(adb -s "$SERIAL" shell 'for p in /system/bin/tcpdump /data/local/tmp/tcpdump; do [ -x "$p" ] && echo "$p"; done; command -v tcpdump' 2>/dev/null | tr -d '\r' | head -1)"
+  if [ -n "$TCPDUMP_AT" ]; then
+    ok "tcpdump on the device ($TCPDUMP_AT)"
   else
     bad "no tcpdump on the device — the run will have no pcap, so no decryption" \
         "./setup-device.sh $SERIAL '' ./tcpdump-static"
